@@ -1,7 +1,7 @@
 # MemLiner README
 
 
-MemLiner  is  a  managed  runtime  built  for  a  memory-disaggregated cluster where each managed application runson one server and uses both local memory and remote memory located on another server. When launched on MemLiner,the process fetches data from the remote server via the paging system.  MemLiner reduces the local-memory working set and improves the remote-memory prefetching by lining upthe memory accesses from application and GC threads. MemLiner is transparent to applications and can be integrated in any existing GC algorithms, such as G1 and Shenandoah. Please refer to our OSDI'22 paper, **[MemLiner](http://web.cs.ucla.edu/~harryxu/papers/memliner-osdi22.pdf)**, for more details. 
+MemLiner  is  a  managed  runtime  built  for  a  memory-disaggregated cluster where each managed application runs on one server and uses both local memory and remote memory located on another server. When launched on MemLiner,the process fetches data from the remote server via the paging system.  MemLiner reduces the local-memory working set and improves the remote-memory prefetching by lining up the memory accesses from application and GC threads. MemLiner is transparent to applications and can be integrated in any existing GC algorithms, such as G1 and Shenandoah. Please refer to our OSDI'22 paper, **[MemLiner](http://web.cs.ucla.edu/~harryxu/papers/memliner-osdi22.pdf)** and TOCS'25 paper **[Lining up Garbage Collection and Application for a Far-Memory-Friendly Runtime](https://dl.acm.org/doi/10.1145/3749283)**, for more details. 
 
 
 
@@ -13,41 +13,20 @@ MemLiner  is  a  managed  runtime  built  for  a  memory-disaggregated cluster w
 Two sets of environment have been tested for MemLiner:
 
 ```bash
-Ubuntu 18.04
-Linux 5.4
-OpenJDK 12.04
-GCC 5.5 
-MLNX_OFED driver 4.9-2.2.4.0
-
-or
-
-CentOS 7.5 - 7.7
-Linux 5.4
-OpenJDK 12.04
-GCC 5.5
-MLNX_OFED driver 4.9-2.2.4.0 
+Ubuntu 20.04
+Linux 5.11
+OpenJDK 12
+GCC 7.5 
+MLNX_OFED driver 5.6-2.0.9.0
 ```
 
 Among the requirements, the Linux version, OpenJDK version and MLNX-OFED driver version are guaranteed during the build & installation process below. Just make sure that the Linux distribution version and gcc version are correct.
 
 ## 1.2 Install Kernel
 
-Next we will use Ubuntu 18.04 as an example to show how to build and install the kernel. Please change the kernel on both CPU and memory server.
+Next we will use Ubuntu 20.04 and GCC 7.5 as an example to show how to build and install the kernel. Please change the kernel on both CPU and memory server.
 
-（1）Change the grub parameters
-
-```bash
-sudo vim /etc/default/grub
-
-# Choose the bootup kernel version as 5.4.0
-GRUB_DEFAULT="Advanced options for Ubuntu>Ubuntu, with Linux 5.4.0"
-
-# Change the value of GRUB_CMDLINE_LINUX:
-GRUB_CMDLINE_LINUX="nokaslr transparent_hugepage=madvise intel_pstate=disable idle=poll processor.max_cstate=0 intel_idle.max_cstate=0"
-
-```
-
-（2）Build the Kernel source code && install it. In case new kernel options are prompted during `sudo ./build_kernel.sh build`, press enter to use the default options.
+（1）Build the Kernel source code && install it. In case new kernel options are prompted during `sudo ./build_kernel.sh build`, press enter to use the default options.
 
 ```bash
 # Change to the kernel folder:
@@ -56,24 +35,40 @@ cd MemLiner/Kernel
 # In case new kernel options are prompted, press enter to use the default options.
 sudo ./build_kernel.sh build
 sudo ./build_kernel.sh install
+```
+
+（2） Change the grub parameters
+
+```bash
+sudo vim /etc/default/grub
+
+# Choose the bootup kernel version as 5.11.0-fastswap(from MemLiner/Kernel)
+GRUB_DEFAULT="Advanced options for GNU/Linux>GNU/Linux, with Linux 5.11.0-fastswap"
+
+# Change the value of GRUB_CMDLINE_LINUX:
+GRUB_CMDLINE_LINUX="nokaslr transparent_hugepage=madvise intel_pstate=disable idle=poll processor.max_cstate=0 intel_idle.max_cstate=0"
+
+sudo update-grub
 sudo reboot
 ```
+
 
 ## 1.3 Install MLNX OFED Driver
 
 **Preparations:**
 
-MemLiner is only tested on `MLNX_OFED-4.9-2.2.4.0`. Download and unzip the package according to your system version, on both CPU and memory server.
+MemLiner is only tested on `MLNX_OFED-5.6-2.0.9.0`. Download and unzip the package according to your system version, on both CPU and memory server.
 
 Take Ubuntu 18.04 as an example:
 
 ### 1.3.1 Download & Install the MLNX_OFED driver
 
+check **[MLNX_OFED](https://network.nvidia.com/products/infiniband-drivers/linux/mlnx_ofed/)** and Download MLNX_OFED_LINUX-5.6-2.0.9.0-ubuntu20.04-x86_64.tgz
+
 ```bash
-# Download the MLNX OFED driver for the Ubuntu 18.04
-wget https://content.mellanox.com/ofed/MLNX_OFED-4.9-2.2.4.0/MLNX_OFED_LINUX-4.9-2.2.4.0-ubuntu18.04-x86_64.tgz
-tar xzf MLNX_OFED_LINUX-4.9-2.2.4.0-ubuntu18.04-x86_64.tgz
-cd MLNX_OFED_LINUX-4.9-2.2.4.0-ubuntu18.04-x86_64
+# Download the MLNX OFED driver for the Ubuntu 20.04
+tar xzf MLNX_OFED_LINUX-5.6-2.0.9.0-ubuntu20.04-x86_64.tgz
+cd MLNX_OFED_LINUX-5.6-2.0.9.0-ubuntu20.04-x86_64.tgz
 
 # Remove the incompatible libraries
 sudo apt remove ibverbs-providers:amd64 librdmacm1:amd64 librdmacm-dev:amd64 libibverbs-dev:amd64 libopensm5a libosmvendor4 libosmcomp3 -y
@@ -161,13 +156,9 @@ sudo yum install -y gtk2 atk cairo tcl tk
 
 Download the MLNX OFED driver for CentOS 7.7
 
-```bash
-wget https://content.mellanox.com/ofed/MLNX_OFED-4.9-2.2.4.0/MLNX_OFED_LINUX-4.9-2.2.4.0-rhel7.7-x86_64.tgz
-```
+And then, repeat the steps in 1.3.
 
-And then, repeat the steps from 3.3.1 to 3.3.3.
-
-## 1.4 Build the RemoteSwap data path
+## 1.4 Build the RemoteSwap data path and connect CPU server and memory servers.
 
 The user needs to build the RemoteSwap on both the CPU server and memory servers.
 
@@ -175,46 +166,38 @@ The user needs to build the RemoteSwap on both the CPU server and memory servers
 
 (1) IP configuration
 
-Assign memory server’s ip address to both the CPU server and memory servers. Take `guest@zion-1.cs.ucla.edu`(CPU server) and `guest@zion-4.cs.ucla.edu`(Memory server) as an example. Memory server’s InfiniBand IP address is 10.0.0.4: (InfiniBand IP of zion-12 is 10.0.0.12. IPs of IB on other servers can be printed with `ifconfig ib0 | grep inet`)
+Assign memory server’s ip address to both the CPU server and memory servers. Take `guest@ict-1`(CPU server) and `guest@ict-2`(Memory server) as an example. Suppose the memory server’s InfiniBand IP address is 10.0.0.2: (IPs of IB on other servers can be printed with `ifconfig ib0 | grep inet`)
 
-```cpp
-// (1) CPU server
-// Replace the ${HOME}/Memliner/scripts/client/rswap_rdma.c:783:	char ip[] = "memory.server.ib.ip";
-// to:
-char ip[] = "10.0.0.4";
+Modify parameters in `MemLiner/remoteswap/client/manage_rswap_client.sh`.
 
-// (2) Memory server
-// Replace the ${HOME}/Memliner/scripts/server/rswap_server.cpp:61:	const char *ip_str = "memory.server.ib.ip";
-// to:
-const char *ip_str = "10.0.0.4";
-```
+```bash
+mem_server_ip="10.0.0.2"
+mem_server_port="9400"
 
-(2) Available cores configuration for RemoteSwap server (memory server).
-
-Replace the macro, `ONLINE_CORES`, defined in `MemLiner/scripts/server/rswap_server.hpp` to the number of cores of the CPU server (which can be printed by command line, `nproc` , on the CPU server.)
-
-```cpp
-// ${HOME}/MemLiner/scripts/server/rswap_server.hpp:38:
-#define ONLINE_CORES 16
+swap_file="${home_dir}/swapfile"
+SWAP_PARTITION_SIZE_GB="32"
 ```
 
 ### 1.4.2 Build the RemoteSwap datapath
 
-(1) Build the client end on the CPU server, e.g., `guest@zion-1.cs.ucla.edu`
+(1) Build the server end on the memory server, e.g., `guest@ict-2`
 
 ```bash
-cd ${HOME}/MemLiner/scripts/client
-make clean && make
+cd /MemLiner/remoteswap/server
+make clean
+make
+# Make sure the core number of the cpu server is configured correctly, otherwise the CPU server will crash in the next step.
+./rswap-server <memory server ip> <memory server port> <swapfile size in GB> <number of cores on cpu server>
 ```
 
-(2) Build the server end on the memory server, e.g., `guest@zion-4.cs.ucla.edu`
+(2) Build the client end on the CPU server, e.g., `guest@ict-1`
 
 ```bash
-cd ${HOME}/MemLiner/scripts/server
-make clean && make
+cd MemLiner/remoteswap/client
+make clean
+make
+./manage_rswap_client.sh install
 ```
-
-And then, please refer to **Section 1.1** for how to connect the CPU server and the memory server.
 
 ## 1.5 Build MemLiner (OpenJDK) on CPU server
 
@@ -223,37 +206,19 @@ Build MemLiner JDK. Please download and install jdk-12.0.2 and other dependent l
 ```bash
 cd ${HOME}/MemLiner/JDK
 ./configure --with-boot-jdk=$HOME/jdk-12.0.2 --with-debug-level=release
-make JOBS=32
+make -j$nproc
 ```
 
 # 2. Configuration
 
 ## 2.1 Connect the CPU server with the memory server
 
-**Warning**: The CPU server and the memory server only need to be connected once, and the connection will persist until reboot or memory server process is killed. Before trying to connect, check whether they are already connected. See Question#1 in FAQ for instructions. If it is connected, directly go to section 1.2.
+**Warning**: The CPU server and the memory server only need to be connected once, and the connection will persist until reboot or memory server process is killed. Before trying to connect, check whether they are already connected. See #1.4.2 for instructions. 
 
 Launch the memory server:
 
 ```bash
-# Log into memory server, e.g., guest@zion-4.cs.ucla.edu or guest@zion-12.cs.ucla.edu
-
-# Let memory server run in background
-tmux
-
-# Launch the memory server and wait the connection from CPU serever
-cd ${HOME}/MemLiner/scripts/server
-./rswap-server
-```
-
-Launch the CPU server:
-
-```bash
-# Log into the CPU server, e.g., guest@zion-1.cs.ucla.edu or guest@zion-3.cs.ucla.edu
-cd ${HOME}/MemLiner/scripts/client
-./manage_rswap_client.sh install
-
-# Confirm the success of the RDMA connection between the CPU server and the memory server.
-# Print the kernel log by:
+# check the CPU server and the memory server have been connected
 dmesg | grep "frontswap module loaded"
 
 # the output should be:
