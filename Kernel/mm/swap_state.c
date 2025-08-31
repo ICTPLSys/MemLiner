@@ -21,19 +21,11 @@
 #include <linux/vmalloc.h>
 #include <linux/swap_slots.h>
 #include <linux/huge_mm.h>
-
-#include <asm/pgtable.h>
-
-// [ADC] for async prefetch.
+#include <linux/shmem_fs.h>
+#include "internal.h"
 #include <linux/frontswap.h>
 
-// [ADC] profile swap stats.
-#include <linux/swap_stats.h>
-#include <linux/page_idle.h>
-
-// for uffd
-#include <linux/swap_global_struct_mem_layer.h>
-
+// [Memliner]
 int readahead_win = 0;
 
 /*
@@ -70,8 +62,8 @@ static bool enable_vma_readahead __read_mostly = true;
 #define GET_SWAP_RA_VAL(vma)					\
 	(atomic_long_read(&(vma)->swap_readahead_info) ? : 4)
 
-#define INC_CACHE_INFO(x)	do { swap_cache_info.x++; } while (0)
-#define ADD_CACHE_INFO(x, nr)	do { swap_cache_info.x += (nr); } while (0)
+#define INC_CACHE_INFO(x)	data_race(swap_cache_info.x++)
+#define ADD_CACHE_INFO(x, nr)	data_race(swap_cache_info.x += (nr))
 
 static struct {
 	unsigned long add_total;
@@ -119,16 +111,32 @@ void show_swap_cache_info(void)
 	printk("Total swap = %lukB\n", total_swap_pages << (PAGE_SHIFT - 10));
 }
 
+void *get_shadow_from_swap_cache(swp_entry_t entry)
+{
+	struct address_space *address_space = swap_address_space(entry);
+	pgoff_t idx = swp_offset(entry);
+	struct page *page;
+
+	page = find_get_entry(address_space, idx);
+	if (xa_is_value(page))
+		return page;
+	if (page)
+		put_page(page);
+	return NULL;
+}
+
 /*
  * add_to_swap_cache resembles add_to_page_cache_locked on swapper_space,
  * but sets SwapCache flag and private instead of mapping and index.
  */
-int add_to_swap_cache(struct page *page, swp_entry_t entry, gfp_t gfp)
+int add_to_swap_cache(struct page *page, swp_entry_t entry,
+			gfp_t gfp, void **shadowp)
 {
 	struct address_space *address_space = swap_address_space(entry);
 	pgoff_t idx = swp_offset(entry);
 	XA_STATE_ORDER(xas, &address_space->i_pages, idx, compound_order(page));
-	unsigned long i, nr = compound_nr(page);
+	unsigned long i, nr = thp_nr_pages(page);
+	void *old;
 
 	VM_BUG_ON_PAGE(!PageLocked(page), page);
 	VM_BUG_ON_PAGE(PageSwapCache(page), page);
@@ -138,16 +146,25 @@ int add_to_swap_cache(struct page *page, swp_entry_t entry, gfp_t gfp)
 	SetPageSwapCache(page);
 
 	do {
+		unsigned long nr_shadows = 0;
+
 		xas_lock_irq(&xas);
 		xas_create_range(&xas);
 		if (xas_error(&xas))
 			goto unlock;
 		for (i = 0; i < nr; i++) {
 			VM_BUG_ON_PAGE(xas.xa_index != idx + i, page);
+			old = xas_load(&xas);
+			if (xa_is_value(old)) {
+				nr_shadows++;
+				if (shadowp)
+					*shadowp = old;
+			}
 			set_page_private(page + i, entry.val + i);
 			xas_store(&xas, page);
 			xas_next(&xas);
 		}
+		address_space->nrexceptional -= nr_shadows;
 		address_space->nrpages += nr;
 		__mod_node_page_state(page_pgdat(page), NR_FILE_PAGES, nr);
 		ADD_CACHE_INFO(add_total, nr);
@@ -167,10 +184,11 @@ unlock:
  * This must be called only on pages that have
  * been verified to be in the swap cache.
  */
-void __delete_from_swap_cache(struct page *page, swp_entry_t entry)
+void __delete_from_swap_cache(struct page *page,
+			swp_entry_t entry, void *shadow)
 {
 	struct address_space *address_space = swap_address_space(entry);
-	int i, nr = hpage_nr_pages(page);
+	int i, nr = thp_nr_pages(page);
 	pgoff_t idx = swp_offset(entry);
 	XA_STATE(xas, &address_space->i_pages, idx);
 
@@ -179,12 +197,14 @@ void __delete_from_swap_cache(struct page *page, swp_entry_t entry)
 	VM_BUG_ON_PAGE(PageWriteback(page), page);
 
 	for (i = 0; i < nr; i++) {
-		void *entry = xas_store(&xas, NULL);
+		void *entry = xas_store(&xas, shadow);
 		VM_BUG_ON_PAGE(entry != page, entry);
 		set_page_private(page + i, 0);
 		xas_next(&xas);
 	}
 	ClearPageSwapCache(page);
+	if (shadow)
+		address_space->nrexceptional += nr;
 	address_space->nrpages -= nr;
 	__mod_node_page_state(page_pgdat(page), NR_FILE_PAGES, -nr);
 	ADD_CACHE_INFO(del_total, nr);
@@ -195,7 +215,7 @@ void __delete_from_swap_cache(struct page *page, swp_entry_t entry)
  * @page: page we want to move to swap
  *
  * Allocate swap space for the page and add the page to the
- * swap cache.  Caller needs to hold the page lock.
+ * swap cache.  Caller needs to hold the page lock. 
  */
 int add_to_swap(struct page *page)
 {
@@ -221,7 +241,7 @@ int add_to_swap(struct page *page)
 	 * Add it to the swap cache.
 	 */
 	err = add_to_swap_cache(page, entry,
-			__GFP_HIGH|__GFP_NOMEMALLOC|__GFP_NOWARN);
+			__GFP_HIGH|__GFP_NOMEMALLOC|__GFP_NOWARN, NULL);
 	if (err)
 		/*
 		 * add_to_swap_cache() doesn't return -EEXIST, so we can safely
@@ -230,7 +250,7 @@ int add_to_swap(struct page *page)
 		goto fail;
 	/*
 	 * Normally the page will be dirtied in unmap because its pte should be
-	 * dirty. A special case is MADV_FREE page. The page'e pte could have
+	 * dirty. A special case is MADV_FREE page. The page's pte could have
 	 * dirty bit cleared but the page's SwapBacked bit is still set because
 	 * clearing the dirty bit and SwapBacked bit has no lock protected. For
 	 * such page, unmap will not set dirty bit for it, so page reclaim will
@@ -259,16 +279,47 @@ void delete_from_swap_cache(struct page *page)
 	struct address_space *address_space = swap_address_space(entry);
 
 	xa_lock_irq(&address_space->i_pages);
-	__delete_from_swap_cache(page, entry);
+	__delete_from_swap_cache(page, entry, NULL);
 	xa_unlock_irq(&address_space->i_pages);
 
 	put_swap_page(page, entry);
-	page_ref_sub(page, hpage_nr_pages(page));
+	page_ref_sub(page, thp_nr_pages(page));
 }
 
-/*
- * If we are the only user, then try to free up the swap cache.
- *
+void clear_shadow_from_swap_cache(int type, unsigned long begin,
+				unsigned long end)
+{
+	unsigned long curr = begin;
+	void *old;
+
+	for (;;) {
+		unsigned long nr_shadows = 0;
+		swp_entry_t entry = swp_entry(type, curr);
+		struct address_space *address_space = swap_address_space(entry);
+		XA_STATE(xas, &address_space->i_pages, curr);
+
+		xa_lock_irq(&address_space->i_pages);
+		xas_for_each(&xas, old, end) {
+			if (!xa_is_value(old))
+				continue;
+			xas_store(&xas, NULL);
+			nr_shadows++;
+		}
+		address_space->nrexceptional -= nr_shadows;
+		xa_unlock_irq(&address_space->i_pages);
+
+		/* search the next swapcache until we meet end */
+		curr >>= SWAP_ADDRESS_SPACE_SHIFT;
+		curr++;
+		curr <<= SWAP_ADDRESS_SPACE_SHIFT;
+		if (curr > end)
+			break;
+	}
+}
+
+/* 
+ * If we are the only user, then try to free up the swap cache. 
+ * 
  * Its ok to check for PageSwapCache without the page lock
  * here because we are going to recheck again inside
  * try_to_free_swap() _with_ the lock.
@@ -282,7 +333,7 @@ static inline void free_swap_cache(struct page *page)
 	}
 }
 
-/*
+/* 
  * Perform a free_page(), also freeing any swap cache associated with
  * this page if it is the last user of the page.
  */
@@ -368,16 +419,51 @@ struct page *lookup_swap_cache(swp_entry_t entry, struct vm_area_struct *vma,
 	return page;
 }
 
+/**
+ * find_get_incore_page - Find and get a page from the page or swap caches.
+ * @mapping: The address_space to search.
+ * @index: The page cache index.
+ *
+ * This differs from find_get_page() in that it will also look for the
+ * page in the swap cache.
+ *
+ * Return: The found page or %NULL.
+ */
+struct page *find_get_incore_page(struct address_space *mapping, pgoff_t index)
+{
+	swp_entry_t swp;
+	struct swap_info_struct *si;
+	struct page *page = find_get_entry(mapping, index);
+
+	if (!page)
+		return page;
+	if (!xa_is_value(page))
+		return find_subpage(page, index);
+	if (!shmem_mapping(mapping))
+		return NULL;
+
+	swp = radix_to_swp_entry(page);
+	/* Prevent swapoff from happening to us */
+	si = get_swap_device(swp);
+	if (!si)
+		return NULL;
+	page = find_get_page(swap_address_space(swp), swp_offset(swp));
+	put_swap_device(si);
+	return page;
+}
+
 struct page *__read_swap_cache_async(swp_entry_t entry, gfp_t gfp_mask,
 			struct vm_area_struct *vma, unsigned long addr,
 			bool *new_page_allocated)
 {
-	struct page *found_page = NULL, *new_page = NULL;
 	struct swap_info_struct *si;
-	int err;
+	struct page *page;
+	void *shadow = NULL;
+
 	*new_page_allocated = false;
 
-	do {
+	for (;;) {
+		int err;
 		/*
 		 * First check the swap cache.  Since this is normally
 		 * called after lookup_swap_cache() failed, re-calling
@@ -385,12 +471,12 @@ struct page *__read_swap_cache_async(swp_entry_t entry, gfp_t gfp_mask,
 		 */
 		si = get_swap_device(entry);
 		if (!si)
-			break;
-		found_page = find_get_page(swap_address_space(entry),
-					   swp_offset(entry));
+			return NULL;
+		page = find_get_page(swap_address_space(entry),
+				     swp_offset(entry));
 		put_swap_device(si);
-		if (found_page)
-			break;
+		if (page)
+			return page;
 
 		/*
 		 * Just skip read ahead for unused swap slot.
@@ -401,54 +487,69 @@ struct page *__read_swap_cache_async(swp_entry_t entry, gfp_t gfp_mask,
 		 * else swap_off will be aborted if we return NULL.
 		 */
 		if (!__swp_swapcount(entry) && swap_slot_cache_enabled)
-			break;
+			return NULL;
 
 		/*
-		 * Get a new page to read into from swap.
+		 * Get a new page to read into from swap.  Allocate it now,
+		 * before marking swap_map SWAP_HAS_CACHE, when -EEXIST will
+		 * cause any racers to loop around until we add it to cache.
 		 */
-		if (!new_page) {
-			new_page = alloc_page_vma(gfp_mask, vma, addr);
-			if (!new_page)
-				break;		/* Out of memory */
-		}
+		page = alloc_page_vma(gfp_mask, vma, addr);
+		if (!page)
+			return NULL;
 
 		/*
 		 * Swap entry may have been freed since our caller observed it.
 		 */
 		err = swapcache_prepare(entry);
-		if (err == -EEXIST) {
-			/*
-			 * We might race against get_swap_page() and stumble
-			 * across a SWAP_HAS_CACHE swap_map entry whose page
-			 * has not been brought into the swapcache yet.
-			 */
-			cond_resched();
-			continue;
-		} else if (err)		/* swp entry is obsolete ? */
+		if (!err)
 			break;
 
-		/* May fail (-ENOMEM) if XArray node allocation failed. */
-		__SetPageLocked(new_page);
-		__SetPageSwapBacked(new_page);
-		err = add_to_swap_cache(new_page, entry, gfp_mask & GFP_KERNEL);
-		if (likely(!err)) {
-			/* Initiate read into locked page */
-			SetPageWorkingset(new_page);
-			lru_cache_add_anon(new_page);
-			*new_page_allocated = true;
-			return new_page;
-		}
-		__ClearPageLocked(new_page);
-		/*
-		 * add_to_swap_cache() doesn't return -EEXIST, so we can safely
-		 * clear SWAP_HAS_CACHE flag.
-		 */
-		put_swap_page(new_page, entry);
-	} while (err != -ENOMEM);
+		put_page(page);
+		if (err != -EEXIST)
+			return NULL;
 
-	if (new_page)
-		put_page(new_page);
-	return found_page;
+		/*
+		 * We might race against __delete_from_swap_cache(), and
+		 * stumble across a swap_map entry whose SWAP_HAS_CACHE
+		 * has not yet been cleared.  Or race against another
+		 * __read_swap_cache_async(), which has set SWAP_HAS_CACHE
+		 * in swap_map, but not yet added its page to swap cache.
+		 */
+		cond_resched();
+	}
+
+	/*
+	 * The swap entry is ours to swap in. Prepare the new page.
+	 */
+
+	__SetPageLocked(page);
+	__SetPageSwapBacked(page);
+
+	/* May fail (-ENOMEM) if XArray node allocation failed. */
+	if (add_to_swap_cache(page, entry, gfp_mask & GFP_RECLAIM_MASK, &shadow)) {
+		put_swap_page(page, entry);
+		goto fail_unlock;
+	}
+
+	if (mem_cgroup_charge(page, NULL, gfp_mask)) {
+		delete_from_swap_cache(page);
+		goto fail_unlock;
+	}
+
+	if (shadow)
+		workingset_refault(page, shadow);
+
+	/* Caller will initiate read into locked page */
+	SetPageWorkingset(page);
+	lru_cache_add(page);
+	*new_page_allocated = true;
+	return page;
+
+fail_unlock:
+	unlock_page(page);
+	put_page(page);
+	return NULL;
 }
 
 /*
@@ -465,7 +566,7 @@ struct page *read_swap_cache_async(swp_entry_t entry, gfp_t gfp_mask,
 			vma, addr, &page_was_allocated);
 
 	if (page_was_allocated)
-		swap_readpage(retpage, do_poll);
+		swap_readpage_async(retpage);
 
 	return retpage;
 }
@@ -476,11 +577,13 @@ static unsigned int __swapin_nr_pages(unsigned long prev_offset,
 				      int max_pages,
 				      int prev_win)
 {
-	unsigned int pages, last_ra;
 
-	if (readahead_win) {
-		return readahead_win;
-	}
+	// // [Memliner]
+	// if (readahead_win) {
+	// 	return readahead_win;
+	// }
+
+	unsigned int pages, last_ra;
 
 	/*
 	 * This heuristic has been found to work well on both sequential and
@@ -525,10 +628,11 @@ static unsigned long swapin_nr_pages(unsigned long offset)
 		return 1;
 
 	hits = atomic_xchg(&swapin_readahead_hits, 0);
-	pages = __swapin_nr_pages(prev_offset, offset, hits, max_pages,
+	pages = __swapin_nr_pages(READ_ONCE(prev_offset), offset, hits,
+				  max_pages,
 				  atomic_read(&last_readahead_pages));
 	if (!hits)
-		prev_offset = offset;
+		WRITE_ONCE(prev_offset, offset);
 	atomic_set(&last_readahead_pages, pages);
 
 	return pages;
@@ -550,38 +654,43 @@ static unsigned long swapin_nr_pages(unsigned long offset)
  * This has been extended to use the NUMA policies from the mm triggering
  * the readahead.
  *
- * Caller must hold read mmap_sem if vmf->vma is not NULL.
+ * Caller must hold read mmap_lock if vmf->vma is not NULL.
  */
 struct page *swap_cluster_readahead(swp_entry_t entry, gfp_t gfp_mask,
 				struct vm_fault *vmf)
 {
-	struct page *page;
-	struct page *fault_page;
+	struct page *page, *fault_page;
 	unsigned long entry_offset = swp_offset(entry);
 	unsigned long offset = entry_offset;
 	unsigned long start_offset, end_offset;
 	unsigned long mask;
 	struct swap_info_struct *si = swp_swap_info(entry);
 	struct blk_plug plug;
-	bool do_poll = true, page_allocated;
+	bool page_allocated, demand_page_allocated;
 	struct vm_area_struct *vma = vmf->vma;
 	unsigned long addr = vmf->address;
 	int cpu;
 
-	mask = swapin_nr_pages(offset) - 1;
-	cpu = get_cpu();
+	// do demand swap-ins first
+ 	fault_page = __read_swap_cache_async(entry, gfp_mask, vma,
+ 						addr, &demand_page_allocated);
 
+ 	cpu = get_cpu();
+ 	if (demand_page_allocated) {
+ 		swap_readpage(fault_page, true);
+ 	}
+
+	mask = swapin_nr_pages(offset) - 1;
 	if (!mask)
 		goto skip;
 
 	/* Test swap type to make sure the dereference is safe */
-	if (likely(si->flags & (SWP_BLKDEV | SWP_FS))) {
+	if (likely(si->flags & (SWP_BLKDEV | SWP_FS_OPS))) {
 		struct inode *inode = si->swap_file->f_mapping->host;
 		if (inode_read_congested(inode))
 			goto skip;
 	}
 
-	do_poll = false;
 	/* Read a page_cluster sized and aligned cluster around offset. */
 	start_offset = offset & ~mask;
 	end_offset = offset | mask;
@@ -593,33 +702,17 @@ struct page *swap_cluster_readahead(swp_entry_t entry, gfp_t gfp_mask,
 	blk_start_plug(&plug);
 	for (offset = start_offset; offset <= end_offset ; offset++) {
 		/* Ok, do the async read-ahead now */
+		if (offset == entry_offset) // skip demand swap-ins
+ 			continue;
 		page = __read_swap_cache_async(
 			swp_entry(swp_type(entry), offset),
 			gfp_mask, vma, addr, &page_allocated);
 		if (!page)
 			continue;
 		if (page_allocated) {
-			if (offset != entry_offset) {
-				if (prefetch_buffer_enabled()) {
-					add_page_to_buffer(entry, page);
-				}
-				if (async_prefetch_enabled()) {
-					swap_readpage_async(page);
-				} else {
-					swap_readpage(page, false);
-				}
-				SetPageReadahead(page);
-				count_vm_event(SWAP_RA);
-
-				set_page_prefetch(page);
-				adc_profile_counter_inc(ADC_PREFETCH_SWAPIN);
-				count_memcg_event_mm(vma->vm_mm, PREFETCH_SWAPIN);
-			} else {
-				swap_readpage(page, false);
-
-				adc_profile_counter_inc(ADC_ONDEMAND_SWAPIN);
-				count_memcg_event_mm(vma->vm_mm, ONDEMAND_SWAPIN);
-			}
+			swap_readpage_async(page);
+			SetPageReadahead(page);
+			count_vm_event(SWAP_RA);
 		}
 		put_page(page);
 	}
@@ -627,9 +720,9 @@ struct page *swap_cluster_readahead(swp_entry_t entry, gfp_t gfp_mask,
 
 	lru_add_drain();	/* Push any new pages onto the LRU now */
 skip:
-	fault_page = read_swap_cache_async(entry, gfp_mask, vma, addr, do_poll);
-	put_cpu();
-	frontswap_poll_load(cpu);
+	if (demand_page_allocated)
+ 		frontswap_poll_load(cpu);
+ 	put_cpu();
 	return fault_page;
 }
 
@@ -673,7 +766,7 @@ static inline void swap_ra_clamp_pfn(struct vm_area_struct *vma,
 	*start = max3(lpfn, PFN_DOWN(vma->vm_start),
 		      PFN_DOWN(faddr & PMD_MASK));
 	*end = min3(rpfn, PFN_DOWN(vma->vm_end),
-		    PFN_DOWN((faddr & PMD_MASK) + PMD_SIZE));
+		      PFN_DOWN((faddr & PMD_MASK) + PMD_SIZE));
 }
 
 static void swap_ra_info(struct vm_fault *vmf,
@@ -746,7 +839,7 @@ static void swap_ra_info(struct vm_fault *vmf,
 
 /**
  * swap_vma_readahead - swap in pages in hope we need them soon
- * @entry: swap entry of this memory
+ * @fentry: swap entry of this memory
  * @gfp_mask: memory allocation flags
  * @vmf: fault information
  *
@@ -755,7 +848,7 @@ static void swap_ra_info(struct vm_fault *vmf,
  * Primitive swap readahead code. We simply read in a few pages whoes
  * virtual addresses are around the fault address in the same vma.
  *
- * Caller must hold read mmap_sem if vmf->vma is not NULL.
+ * Caller must hold read mmap_lock if vmf->vma is not NULL.
  *
  */
 static struct page *swap_vma_readahead(swp_entry_t fentry, gfp_t gfp_mask,
@@ -763,24 +856,33 @@ static struct page *swap_vma_readahead(swp_entry_t fentry, gfp_t gfp_mask,
 {
 	struct blk_plug plug;
 	struct vm_area_struct *vma = vmf->vma;
-	struct page *page;
-	struct page *fault_page;
+	struct page *page, *fault_page;
 	pte_t *pte, pentry;
 	swp_entry_t entry;
 	unsigned int i;
-	bool page_allocated;
-	struct vma_swap_readahead ra_info = {0,};
+	bool page_allocated, demand_page_allocated;
+	struct vma_swap_readahead ra_info = {
+		.win = 1,
+	};
 	int cpu;
+	
+	// do demand swap-ins first
+ 	fault_page = __read_swap_cache_async(fentry, gfp_mask, vma,
+ 						vmf->address, &demand_page_allocated);
+	cpu = get_cpu();
+	if (demand_page_allocated) {
+ 		swap_readpage(fault_page, true);
+ 	}
 
 	swap_ra_info(vmf, &ra_info);
-
-	cpu = get_cpu();
 	if (ra_info.win == 1)
 		goto skip;
 
 	blk_start_plug(&plug);
 	for (i = 0, pte = ra_info.ptes; i < ra_info.nr_pte;
 	     i++, pte++) {
+		if (i == ra_info.offset) // skip demand swap-ins
+ 			continue;
 		pentry = *pte;
 		if (pte_none(pentry))
 			continue;
@@ -794,389 +896,20 @@ static struct page *swap_vma_readahead(swp_entry_t fentry, gfp_t gfp_mask,
 		if (!page)
 			continue;
 		if (page_allocated) {
-			if (i != ra_info.offset) {
-				if (prefetch_buffer_enabled()) {
-					add_page_to_buffer(entry, page);
-				}
-				if (async_prefetch_enabled()) {
-					swap_readpage_async(page);
-				} else {
-					swap_readpage(page, false);
-				}
-
-				SetPageReadahead(page);
-				count_vm_event(SWAP_RA);
-
-				set_page_prefetch(page);
-				adc_profile_counter_inc(ADC_PREFETCH_SWAPIN);
-				count_memcg_event_mm(vma->vm_mm, PREFETCH_SWAPIN);
-			} else {
-				swap_readpage(page, false);
-
-				adc_profile_counter_inc(ADC_ONDEMAND_SWAPIN);
-				count_memcg_event_mm(vma->vm_mm, ONDEMAND_SWAPIN);
-			}
-		}
-		put_page(page);
-	}
-	blk_finish_plug(&plug);
-	lru_add_drain();
-skip:
-	fault_page = read_swap_cache_async(fentry, gfp_mask, vma, vmf->address,
-					   ra_info.win == 1);
-	put_cpu();
-	frontswap_poll_load(cpu);
-	return fault_page;
-}
-
-
-/* [ADC] swap in readahead functions with profiling */
-struct page *read_swap_cache_async_profiling(swp_entry_t entry, gfp_t gfp_mask,
-					     struct vm_area_struct *vma,
-					     unsigned long addr, bool do_poll,
-					     int *swap_major)
-{
-	bool page_was_allocated;
-	struct page *retpage = __read_swap_cache_async(entry, gfp_mask,
-			vma, addr, &page_was_allocated);
-
-	if (page_was_allocated) {
-		swap_readpage(retpage, do_poll);
-
-		/* YIFAN: be careful! All calls to `read_swap_cache_async` are
-		 * on-demand swap-ins. So I skip the check here.
-		 */
-		*swap_major |= ADC_PROFILE_MAJOR_BIT;
-		adc_profile_counter_inc(ADC_ONDEMAND_SWAPIN);
-		count_memcg_event_mm(vma->vm_mm, ONDEMAND_SWAPIN);
-	}
-
-	return retpage;
-}
-
-/* [ADC] vma readahead prefetches pages only for current process and can be
- * easily and precisely charged.
- */
-static struct page *swap_vma_readahead_profiling(swp_entry_t fentry,
-		gfp_t gfp_mask, struct vm_fault *vmf, int *swap_major)
-{
-	struct blk_plug plug;
-	struct vm_area_struct *vma = vmf->vma;
-	struct page *page;
-	struct page *fault_page;
-	pte_t *pte, pentry;
-	swp_entry_t entry;
-	unsigned int i;
-	bool page_allocated;
-	struct vma_swap_readahead ra_info = {
-		0,
-	};
-	int cpu;
-	// [ADC] profile rdma latency
-	uint64_t pf_ts_stt, pf_ts_end;
-
-	swap_ra_info(vmf, &ra_info);
-
-	cpu = get_cpu(); // get_cpu disables preemption by itself
-	pf_ts_stt = get_time_in_us();
-	if (ra_info.win == 1)
-		goto skip;
-
-	blk_start_plug(&plug);
-	for (i = 0, pte = ra_info.ptes; i < ra_info.nr_pte; i++, pte++) {
-		pentry = *pte;
-		if (pte_none(pentry))
-			continue;
-		if (pte_present(pentry))
-			continue;
-		entry = pte_to_swp_entry(pentry);
-		if (unlikely(non_swap_entry(entry)))
-			continue;
-		page = __read_swap_cache_async(entry, gfp_mask, vma,
-					       vmf->address, &page_allocated);
-		if (!page)
-			continue;
-		if (page_allocated) {
-			if (i != ra_info.offset) { // prefetched swap-ins
-				if (prefetch_buffer_enabled()) {
-					add_page_to_buffer(entry, page);
-				}
-				if (async_prefetch_enabled()) {
-					swap_readpage_async(page);
-				} else {
-					swap_readpage(page, false);
-				}
-				SetPageReadahead(page);
-				count_vm_event(SWAP_RA);
-
-				set_page_prefetch(page);
-				adc_profile_counter_inc(ADC_PREFETCH_SWAPIN);
-				count_memcg_event_mm(vma->vm_mm, PREFETCH_SWAPIN);
-			} else { // on-demand swap-ins
-				swap_readpage(page, false);
-
-				*swap_major |= ADC_PROFILE_MAJOR_BIT;
-				adc_profile_counter_inc(ADC_ONDEMAND_SWAPIN);
-				count_memcg_event_mm(vma->vm_mm, ONDEMAND_SWAPIN);
-			}
-		}
-		put_page(page);
-	}
-	blk_finish_plug(&plug);
-	lru_add_drain();
-skip:
-	fault_page =
-		read_swap_cache_async_profiling(fentry, gfp_mask, vma,
-						vmf->address, ra_info.win == 1,
-						swap_major);
-	pf_ts_end = get_time_in_us();
-	put_cpu();
-	frontswap_poll_load(cpu);
-	if (*swap_major & ADC_PROFILE_MAJOR_BIT) {
-		accum_adc_time_stat(ADC_RDMA_LATENCY, pf_ts_end - pf_ts_stt);
-	}
-	return fault_page;
-}
-
-/* [ADC] when do cluster prefetch, prefetched pages may not belong to current
- * process. We simply count them to current cgroup for now. The best solution
- * for now is not using cluster readahead and doing vma readahead instead.
- */
-struct page *swap_cluster_readahead_profiling(swp_entry_t entry, gfp_t gfp_mask,
-		struct vm_fault *vmf, int *swap_major)
-{
-	struct page *page;
-	struct page *fault_page;
-	unsigned long entry_offset = swp_offset(entry);
-	unsigned long offset = entry_offset;
-	unsigned long start_offset, end_offset;
-	unsigned long mask;
-	struct swap_info_struct *si = swp_swap_info(entry);
-	struct blk_plug plug;
-	bool do_poll = true, page_allocated;
-	struct vm_area_struct *vma = vmf->vma;
-	unsigned long addr = vmf->address;
-	int cpu;
-	// [ADC] profile rdma latency
-	uint64_t pf_ts_stt, pf_ts_end;
-
-	mask = swapin_nr_pages(offset) - 1;
-
-	cpu = get_cpu();
-	pf_ts_stt = get_time_in_us();
-	if (!mask)
-		goto skip;
-
-	/* Test swap type to make sure the dereference is safe */
-	if (likely(si->flags & (SWP_BLKDEV | SWP_FS))) {
-		struct inode *inode = si->swap_file->f_mapping->host;
-		if (inode_read_congested(inode))
-			goto skip;
-	}
-
-	do_poll = false;
-	/* Read a page_cluster sized and aligned cluster around offset. */
-	start_offset = offset & ~mask;
-	end_offset = offset | mask;
-	if (!start_offset) /* First page is swap header. */
-		start_offset++;
-	if (end_offset >= si->max)
-		end_offset = si->max - 1;
-
-	blk_start_plug(&plug);
-	for (offset = start_offset; offset <= end_offset; offset++) {
-		/* Ok, do the async read-ahead now */
-		page = __read_swap_cache_async(
-			swp_entry(swp_type(entry), offset), gfp_mask, vma, addr,
-			&page_allocated);
-		if (!page)
-			continue;
-		if (page_allocated) {
-			if (offset != entry_offset) { // prefetched swap-ins
-				if (prefetch_buffer_enabled()) {
-					add_page_to_buffer(
-						swp_entry(swp_type(entry),
-							  offset),
-						page);
-				}
-				if (async_prefetch_enabled()) {
-					swap_readpage_async(page);
-				} else {
-					swap_readpage(page, false);
-				}
-				SetPageReadahead(page);
-				count_vm_event(SWAP_RA);
-
-				set_page_prefetch(page);
-				adc_profile_counter_inc(ADC_PREFETCH_SWAPIN);
-				count_memcg_event_mm(vma->vm_mm, PREFETCH_SWAPIN);
-			} else { // on-demand swap-ins
-				swap_readpage(page, false);
-
-				// YIFAN: should we also set MAJOR bit in
-				// async read_page?
-				*swap_major |= ADC_PROFILE_MAJOR_BIT;
-				adc_profile_counter_inc(ADC_ONDEMAND_SWAPIN);
-				count_memcg_event_mm(vma->vm_mm, ONDEMAND_SWAPIN);
-			}
-		}
-		put_page(page);
-	}
-	blk_finish_plug(&plug);
-
-	lru_add_drain(); /* Push any new pages onto the LRU now */
-skip:
-	fault_page = read_swap_cache_async_profiling(entry, gfp_mask, vma, addr,
-						     do_poll, swap_major);
-	pf_ts_end = get_time_in_us();
-	put_cpu();
-	frontswap_poll_load(cpu);
-	if (*swap_major & ADC_PROFILE_MAJOR_BIT) {
-		accum_adc_time_stat(ADC_RDMA_LATENCY, pf_ts_end - pf_ts_stt);
-	}
-	return fault_page;
-}
-
-// prefetch without reading on-demand page
-static inline void swap_vma_prefetch(swp_entry_t fentry, gfp_t gfp_mask,
-				     struct vm_fault *vmf)
-{
-	struct blk_plug plug;
-	struct vm_area_struct *vma = vmf->vma;
-	struct page *page;
-	pte_t *pte, pentry;
-	swp_entry_t entry;
-	unsigned int i;
-	bool page_allocated;
-	struct vma_swap_readahead ra_info = {
-		0,
-	};
-
-	swap_ra_info(vmf, &ra_info);
-
-	if (ra_info.win == 1)
-		return;
-
-	blk_start_plug(&plug);
-	for (i = 0, pte = ra_info.ptes; i < ra_info.nr_pte; i++, pte++) {
-		if (i == ra_info.offset) { // skip on-demand swap-in page
-			continue;
-		}
-		pentry = *pte;
-		if (pte_none(pentry))
-			continue;
-		if (pte_present(pentry))
-			continue;
-		entry = pte_to_swp_entry(pentry);
-		if (unlikely(non_swap_entry(entry)))
-			continue;
-		page = __read_swap_cache_async(entry, gfp_mask, vma,
-					       vmf->address, &page_allocated);
-		if (!page)
-			continue;
-		if (page_allocated) {
-			if (prefetch_buffer_enabled()) {
-				add_page_to_buffer(entry, page);
-			}
-			if (async_prefetch_enabled()) {
-				swap_readpage_async(page);
-			} else {
-				swap_readpage(page, false);
-			}
+			swap_readpage_async(page);
 			SetPageReadahead(page);
 			count_vm_event(SWAP_RA);
-
-			set_page_prefetch(page);
-			adc_profile_counter_inc(ADC_PREFETCH_SWAPIN);
-			count_memcg_event_mm(vma->vm_mm, PREFETCH_SWAPIN);
 		}
 		put_page(page);
 	}
 	blk_finish_plug(&plug);
 	lru_add_drain();
+skip:
+	if (demand_page_allocated)
+		frontswap_poll_load(cpu);
+ 	put_cpu();
+	return fault_page;
 }
-
-static inline void swap_cluster_prefetch(swp_entry_t entry, gfp_t gfp_mask,
-					 struct vm_fault *vmf)
-{
-	struct page *page;
-	unsigned long entry_offset = swp_offset(entry);
-	unsigned long offset = entry_offset;
-	unsigned long start_offset, end_offset;
-	unsigned long mask;
-	struct swap_info_struct *si = swp_swap_info(entry);
-	struct blk_plug plug;
-	bool do_poll = true, page_allocated;
-	struct vm_area_struct *vma = vmf->vma;
-	unsigned long addr = vmf->address;
-
-	mask = swapin_nr_pages(offset) - 1;
-
-	if (!mask)
-		return;
-
-	/* Test swap type to make sure the dereference is safe */
-	if (likely(si->flags & (SWP_BLKDEV | SWP_FS))) {
-		struct inode *inode = si->swap_file->f_mapping->host;
-		if (inode_read_congested(inode))
-			return;
-	}
-
-	do_poll = false;
-	/* Read a page_cluster sized and aligned cluster around offset. */
-	start_offset = offset & ~mask;
-	end_offset = offset | mask;
-	if (!start_offset) /* First page is swap header. */
-		start_offset++;
-	if (end_offset >= si->max)
-		end_offset = si->max - 1;
-
-	blk_start_plug(&plug);
-	for (offset = start_offset; offset <= end_offset; offset++) {
-		if (offset == entry_offset) // skip on-demand swap-ins
-			continue;
-		/* Ok, do the async read-ahead now */
-		page = __read_swap_cache_async(
-			swp_entry(swp_type(entry), offset), gfp_mask, vma, addr,
-			&page_allocated);
-		if (!page)
-			continue;
-		if (page_allocated) {
-			if (prefetch_buffer_enabled()) {
-				add_page_to_buffer(
-					swp_entry(swp_type(entry),
-							offset),
-					page);
-			}
-			if (async_prefetch_enabled()) {
-				swap_readpage_async(page);
-			} else {
-				swap_readpage(page, false);
-			}
-			SetPageReadahead(page);
-			count_vm_event(SWAP_RA);
-
-			set_page_prefetch(page);
-			adc_profile_counter_inc(ADC_PREFETCH_SWAPIN);
-			count_memcg_event_mm(vma->vm_mm, PREFETCH_SWAPIN);
-		}
-		put_page(page);
-	}
-	blk_finish_plug(&plug);
-
-	lru_add_drain(); /* Push any new pages onto the LRU now */
-}
-
-void swap_prefetch_only(swp_entry_t entry, gfp_t gfp_mask,
-			struct vm_fault *vmf)
-{
-	if (swap_use_vma_readahead()) {
-		swap_vma_prefetch(entry, gfp_mask, vmf);
-	} else {
-		swap_cluster_prefetch(entry, gfp_mask, vmf);
-	}
-}
-/* [ADC] profile functions end */
 
 /**
  * swapin_readahead - swap in pages in hope we need them soon
@@ -1198,19 +931,12 @@ struct page *swapin_readahead(swp_entry_t entry, gfp_t gfp_mask,
 			swap_cluster_readahead(entry, gfp_mask, vmf);
 }
 
-struct page *swapin_readahead_profiling(swp_entry_t entry, gfp_t gfp_mask,
-				struct vm_fault *vmf, int *swap_major)
-{
-	return swap_use_vma_readahead() ?
-			swap_vma_readahead_profiling(entry, gfp_mask, vmf, swap_major) :
-			swap_cluster_readahead_profiling(entry, gfp_mask, vmf, swap_major);
-}
-
 #ifdef CONFIG_SYSFS
 static ssize_t vma_ra_enabled_show(struct kobject *kobj,
 				     struct kobj_attribute *attr, char *buf)
 {
-	return sprintf(buf, "%s\n", enable_vma_readahead ? "true" : "false");
+	return sysfs_emit(buf, "%s\n",
+			  enable_vma_readahead ? "true" : "false");
 }
 static ssize_t vma_ra_enabled_store(struct kobject *kobj,
 				      struct kobj_attribute *attr,
@@ -1225,6 +951,9 @@ static ssize_t vma_ra_enabled_store(struct kobject *kobj,
 
 	return count;
 }
+static struct kobj_attribute vma_ra_enabled_attr =
+	__ATTR(vma_ra_enabled, 0644, vma_ra_enabled_show,
+	       vma_ra_enabled_store);
 
 // [MemLiner] control prefetching
 static ssize_t readahead_win_show(struct kobject *kobj,
@@ -1246,13 +975,9 @@ static struct kobj_attribute readahead_win_attr =
 	__ATTR(readahead_win, 0644, readahead_win_show, readahead_win_store);
 
 
-static struct kobj_attribute vma_ra_enabled_attr =
-	__ATTR(vma_ra_enabled, 0644, vma_ra_enabled_show,
-	       vma_ra_enabled_store);
-
 static struct attribute *swap_attrs[] = {
 	&vma_ra_enabled_attr.attr,
- 	&readahead_win_attr.attr,
+	&readahead_win_attr.attr,
 	NULL,
 };
 
@@ -1283,137 +1008,3 @@ delete_obj:
 }
 subsys_initcall(swap_init_sysfs);
 #endif
-
-//
-// Semeru data plane
-//
-
-/**
- * Do prefetch according the information passed down by user process.
- *
- */
-static void swap_vma_readahead_prefetch(gfp_t gfp_mask,
-					struct vm_fault_prefetch *vmf_prefetch)
-{
-	//struct blk_plug plug;
-	struct vm_area_struct *vma = vmf_prefetch->vma;
-	struct page *page;
-	swp_entry_t entry;
-	unsigned int i;
-	bool page_allocated;
-	int cpu;
-
-	cpu = get_cpu(); // get_cpu disables preemption by itself
-
-	for (i = 0; i < vmf_prefetch->prefetch_num; i++) {
-		// a. walk the page table to get the pte
-		entry = walk_page_table_for_swap_entry(
-			vma->vm_mm, vmf_prefetch->address[i]);
-		if (unlikely(entry.val == 0 || non_swap_entry(entry))) {
-#ifdef DEBUG_SEMERU_DATA_PLANE_BRIEF
-			pr_warn("%s, page virt_addr 0x%lx is not valid, skip.\n",
-				__func__, vmf_prefetch->address[i]);
-#endif
-
-			continue;
-		}
-
-		//  b. check the swap_cache first
-		page = __read_swap_cache_async(
-			entry, gfp_mask, vma, vmf_prefetch->address[i],
-			&page_allocated); // check the swap cache
-		if (!page) // Should be Out-of-Memory error ? 1) There is no page in swap_cache; 2) can't allocate a page.
-			continue;
-
-		if (page_allocated) {
-			if (async_prefetch_enabled()) {
-				swap_readpage_async(page);
-			} else {
-				swap_readpage(page, false);
-			}
-			SetPageReadahead(page);
-			count_vm_event(SWAP_RA);
-
-			set_page_prefetch(page);
-			adc_profile_counter_inc(ADC_PREFETCH_SWAPIN);
-			count_memcg_event_mm(vma->vm_mm, PREFETCH_SWAPIN);
-		}
-		put_page(
-			page); // page is in swap_cache now.  What's the purpose of decreasing page->_ref_count ?
-	}
-	lru_add_drain(); // [?] what's the purpose of this ?
-	put_cpu(); // enable preempt
-}
-
-/**
- * Do prefetch by using the prefetch hints passed dwon from user space
- *
- * user space virtual address -> pte -> swan_entry_t
- * Physical page can be allocated and added into the swap cache during this procedure.
- *
- * Warning : we use virtual address based prefetch now.
- *
- * Parameters
- * 	struct vm_fault_prefetch.
- * 	This variable is built by the user space, address[], and this function.
- * 	It contains all the pages to be prefetched.
- *
- * 	[Warning] : all the pages within the vm_fault_prefetch->address[] should belone to one VMA.
- * 	Or we have to retrive the vma for each virtual address, which cause significant overhead in the critical path
- *
- * Return value
- * 	no need to return.
- * 	All the prefetched pages are added into swap_cache.
- *
- */
-void swapin_readahead_prefetch(struct vm_fault_prefetch *vmf_prefetch)
-{
-	// is this correct for page allocation during prefetch ?
-	gfp_t gfp_mask = GFP_HIGHUSER_MOVABLE;
-
-	unsigned long prefetch_virt_addr = vmf_prefetch->address[0];
-	struct vm_area_struct *vma;
-	struct task_struct *tsk;
-	struct mm_struct *mm;
-
-#ifdef DEBUG_SEMERU_DATA_PLANE_DETAIL
-	//debug - variables declaration
-	int i;
-	for (i = 0; i < vmf_prefetch->prefetch_num; i++) {
-		pr_warn("%s, prefetch pages[%d] virt_addr 0x%lx \n", __func__,
-			i, vmf_prefetch->address[i]);
-	}
-#endif
-
-	// Prepare the necessary fields of the vm_fault_prefetch
-	tsk = current; // current process, the faulting pthread/process
-	mm = tsk->mm; // mm_struct of this pthread
-	vma = find_vma(mm, prefetch_virt_addr);
-	if (unlikely(!vma)) {
-#ifdef DEBUG_SEMERU_DATA_PLANE_BRIEF
-		pr_err("%s, passed down wrong prfetch info. #1 NULL vma, skip \n",
-		       __func__);
-#endif
-
-		return;
-	}
-	if (likely(vma->vm_start <= prefetch_virt_addr))
-		goto good_area;
-
-	if (unlikely(!(vma->vm_flags & VM_GROWSDOWN))) {
-#ifdef DEBUG_SEMERU_DATA_PLANE_BRIEF
-		pr_err("%s, passed down wrong prfetch info. #2 VM_GROWSDOWN is not set, skip \n",
-		       __func__);
-#endif
-
-		return;
-	}
-
-good_area:
-	/*
-	 * Ok, we have a good vm_area for this memory access, so
-	 * we can handle it..
-	 */
-	vmf_prefetch->vma = vma; // get the vma
-	swap_vma_readahead_prefetch(gfp_mask, vmf_prefetch);
-}

@@ -76,6 +76,13 @@ int perf_data__open_dir(struct perf_data *data)
 	DIR *dir;
 	int nr = 0;
 
+	/*
+	 * Directory containing a single regular perf data file which is already
+	 * open, means there is nothing more to do here.
+	 */
+	if (perf_data__is_single_file(data))
+		return 0;
+
 	if (WARN_ON(!data->is_dir))
 		return -EINVAL;
 
@@ -96,7 +103,7 @@ int perf_data__open_dir(struct perf_data *data)
 		if (stat(path, &st))
 			continue;
 
-		if (!S_ISREG(st.st_mode) || strncmp(dent->d_name, "data", 4))
+		if (!S_ISREG(st.st_mode) || strncmp(dent->d_name, "data.", 5))
 			continue;
 
 		ret = -ENOMEM;
@@ -167,8 +174,21 @@ static bool check_pipe(struct perf_data *data)
 			is_pipe = true;
 	}
 
-	if (is_pipe)
-		data->file.fd = fd;
+	if (is_pipe) {
+		if (data->use_stdio) {
+			const char *mode;
+
+			mode = perf_data__is_read(data) ? "r" : "w";
+			data->file.fptr = fdopen(fd, mode);
+
+			if (data->file.fptr == NULL) {
+				data->file.fd = fd;
+				data->use_stdio = false;
+			}
+		} else {
+			data->file.fd = fd;
+		}
+	}
 
 	return data->is_pipe = is_pipe;
 }
@@ -306,7 +326,7 @@ static int open_dir(struct perf_data *data)
 	 * So far we open only the header, so we can read the data version and
 	 * layout.
 	 */
-	if (asprintf(&data->file.path, "%s/header", data->path) < 0)
+	if (asprintf(&data->file.path, "%s/data", data->path) < 0)
 		return -1;
 
 	if (perf_data__is_write(data) &&
@@ -327,6 +347,9 @@ int perf_data__open(struct perf_data *data)
 	if (check_pipe(data))
 		return 0;
 
+	/* currently it allows stdio for pipe only */
+	data->use_stdio = false;
+
 	if (!data->path)
 		data->path = "perf.data";
 
@@ -346,7 +369,21 @@ void perf_data__close(struct perf_data *data)
 		perf_data__close_dir(data);
 
 	zfree(&data->file.path);
-	close(data->file.fd);
+
+	if (data->use_stdio)
+		fclose(data->file.fptr);
+	else
+		close(data->file.fd);
+}
+
+ssize_t perf_data__read(struct perf_data *data, void *buf, size_t size)
+{
+	if (data->use_stdio) {
+		if (fread(buf, size, 1, data->file.fptr) == 1)
+			return size;
+		return feof(data->file.fptr) ? 0 : -1;
+	}
+	return readn(data->file.fd, buf, size);
 }
 
 ssize_t perf_data_file__write(struct perf_data_file *file,
@@ -358,6 +395,11 @@ ssize_t perf_data_file__write(struct perf_data_file *file,
 ssize_t perf_data__write(struct perf_data *data,
 			      void *buf, size_t size)
 {
+	if (data->use_stdio) {
+		if (fwrite(buf, size, 1, data->file.fptr) == 1)
+			return size;
+		return -1;
+	}
 	return perf_data_file__write(&data->file, buf, size);
 }
 
@@ -406,7 +448,7 @@ unsigned long perf_data__size(struct perf_data *data)
 	u64 size = data->file.size;
 	int i;
 
-	if (!data->is_dir)
+	if (perf_data__is_single_file(data))
 		return size;
 
 	for (i = 0; i < data->dir.nr; i++) {
@@ -416,4 +458,56 @@ unsigned long perf_data__size(struct perf_data *data)
 	}
 
 	return size;
+}
+
+int perf_data__make_kcore_dir(struct perf_data *data, char *buf, size_t buf_sz)
+{
+	int ret;
+
+	if (!data->is_dir)
+		return -1;
+
+	ret = snprintf(buf, buf_sz, "%s/kcore_dir", data->path);
+	if (ret < 0 || (size_t)ret >= buf_sz)
+		return -1;
+
+	return mkdir(buf, S_IRWXU);
+}
+
+char *perf_data__kallsyms_name(struct perf_data *data)
+{
+	char *kallsyms_name;
+	struct stat st;
+
+	if (!data->is_dir)
+		return NULL;
+
+	if (asprintf(&kallsyms_name, "%s/kcore_dir/kallsyms", data->path) < 0)
+		return NULL;
+
+	if (stat(kallsyms_name, &st)) {
+		free(kallsyms_name);
+		return NULL;
+	}
+
+	return kallsyms_name;
+}
+
+bool is_perf_data(const char *path)
+{
+	bool ret = false;
+	FILE *file;
+	u64 magic;
+
+	file = fopen(path, "r");
+	if (!file)
+		return false;
+
+	if (fread(&magic, 1, 8, file) < 8)
+		goto out;
+
+	ret = is_perf_magic(magic);
+out:
+	fclose(file);
+	return ret;
 }

@@ -7,6 +7,9 @@ RISC-V architecture
 
     boot-image-header
     pmu
+    patch-acceptance
+
+    features
 
 .. only::  subproject and html
 

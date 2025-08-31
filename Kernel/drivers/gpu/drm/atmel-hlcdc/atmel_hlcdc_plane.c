@@ -19,7 +19,7 @@
 #include "atmel_hlcdc_dc.h"
 
 /**
- * Atmel HLCDC Plane state structure.
+ * struct atmel_hlcdc_plane_state - Atmel HLCDC Plane state structure.
  *
  * @base: DRM plane state
  * @crtc_x: x position of the plane relative to the CRTC
@@ -34,6 +34,7 @@
  * @disc_y: y discard position
  * @disc_w: discard width
  * @disc_h: discard height
+ * @ahb_id: AHB identification number
  * @bpp: bytes per pixel deduced from pixel_format
  * @offsets: offsets to apply to the GEM buffers
  * @xstride: value to add to the pixel pointer between each line
@@ -280,8 +281,8 @@ atmel_hlcdc_plane_scaler_set_phicoeff(struct atmel_hlcdc_plane *plane,
 					    coeff_tab[i]);
 }
 
-void atmel_hlcdc_plane_setup_scaler(struct atmel_hlcdc_plane *plane,
-				    struct atmel_hlcdc_plane_state *state)
+static void atmel_hlcdc_plane_setup_scaler(struct atmel_hlcdc_plane *plane,
+					   struct atmel_hlcdc_plane_state *state)
 {
 	const struct atmel_hlcdc_layer_desc *desc = plane->layer.desc;
 	u32 xfactor, yfactor;
@@ -601,11 +602,10 @@ static int atmel_hlcdc_plane_atomic_check(struct drm_plane *p,
 	struct drm_framebuffer *fb = state->base.fb;
 	const struct drm_display_mode *mode;
 	struct drm_crtc_state *crtc_state;
-	unsigned int tmp;
 	int ret;
 	int i;
 
-	if (!state->base.crtc || !fb)
+	if (!state->base.crtc || WARN_ON(!fb))
 		return 0;
 
 	crtc_state = drm_atomic_get_existing_crtc_state(s->state, s->crtc);
@@ -694,9 +694,7 @@ static int atmel_hlcdc_plane_atomic_check(struct drm_plane *p,
 	 * Swap width and size in case of 90 or 270 degrees rotation
 	 */
 	if (drm_rotation_90_or_270(state->base.rotation)) {
-		tmp = state->src_w;
-		state->src_w = state->src_h;
-		state->src_h = tmp;
+		swap(state->src_w, state->src_h);
 	}
 
 	if (!desc->layout.size &&

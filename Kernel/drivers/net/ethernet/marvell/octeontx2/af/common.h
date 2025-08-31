@@ -43,7 +43,7 @@ struct qmem {
 	void            *base;
 	dma_addr_t	iova;
 	int		alloc_sz;
-	u8		entry_sz;
+	u16		entry_sz;
 	u8		align;
 	u32		qsize;
 };
@@ -143,8 +143,13 @@ enum nix_scheduler {
 	NIX_TXSCH_LVL_CNT = 0x5,
 };
 
-#define TXSCH_TL1_DFLT_RR_QTM      ((1 << 24) - 1)
-#define TXSCH_TL1_DFLT_RR_PRIO     (0x1ull)
+#define TXSCH_RR_QTM_MAX		((1 << 24) - 1)
+#define TXSCH_TL1_DFLT_RR_QTM		TXSCH_RR_QTM_MAX
+#define TXSCH_TL1_DFLT_RR_PRIO		(0x1ull)
+#define MAX_SCHED_WEIGHT		0xFF
+#define DFLT_RR_WEIGHT			71
+#define DFLT_RR_QTM	((DFLT_RR_WEIGHT * TXSCH_RR_QTM_MAX) \
+			 / MAX_SCHED_WEIGHT)
 
 /* Min/Max packet sizes, excluding FCS */
 #define	NIC_HW_MIN_FRS			40
@@ -157,6 +162,8 @@ enum nix_scheduler {
 #define NIX_RX_ACTIONOP_UCAST_IPSEC	(0x2ull)
 #define NIX_RX_ACTIONOP_MCAST		(0x3ull)
 #define NIX_RX_ACTIONOP_RSS		(0x4ull)
+/* Use the RX action set in the default unicast entry */
+#define NIX_RX_ACTION_DEFAULT		(0xfull)
 
 /* NIX TX action operation*/
 #define NIX_TX_ACTIONOP_DROP		(0x0ull)
@@ -169,8 +176,12 @@ enum nix_scheduler {
 #define NPC_MCAM_KEY_X2			1
 #define NPC_MCAM_KEY_X4			2
 
-#define NIX_INTF_RX			0
-#define NIX_INTF_TX			1
+#define NIX_INTFX_RX(a)			(0x0ull | (a) << 1)
+#define NIX_INTFX_TX(a)			(0x1ull | (a) << 1)
+
+/* Default interfaces are NIX0_RX and NIX0_TX */
+#define NIX_INTF_RX			NIX_INTFX_RX(0)
+#define NIX_INTF_TX			NIX_INTFX_TX(0)
 
 #define NIX_INTF_TYPE_CGX		0
 #define NIX_INTF_TYPE_LBK		1
@@ -195,5 +206,23 @@ enum nix_scheduler {
  */
 #define DEFAULT_RSS_CONTEXT_GROUP	0
 #define MAX_RSS_INDIR_TBL_SIZE		256 /* 1 << Max adder bits */
+
+/* NDC info */
+enum ndc_idx_e {
+	NIX0_RX = 0x0,
+	NIX0_TX = 0x1,
+	NPA0_U  = 0x2,
+	NIX1_RX = 0x4,
+	NIX1_TX = 0x5,
+};
+
+enum ndc_ctype_e {
+	CACHING = 0x0,
+	BYPASS = 0x1,
+};
+
+#define NDC_MAX_PORT 6
+#define NDC_READ_TRANS 0
+#define NDC_WRITE_TRANS 1
 
 #endif /* COMMON_H */

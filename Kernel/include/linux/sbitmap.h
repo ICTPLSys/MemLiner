@@ -32,11 +32,6 @@ struct sbitmap_word {
 	 * @cleared: word holding cleared bits
 	 */
 	unsigned long cleared ____cacheline_aligned_in_smp;
-
-	/**
-	 * @swap_lock: Held while swapping word <-> cleared
-	 */
-	spinlock_t swap_lock;
 } ____cacheline_aligned_in_smp;
 
 /**
@@ -215,15 +210,6 @@ int sbitmap_get_shallow(struct sbitmap *sb, unsigned int alloc_hint,
  * Return: true if any bit in the bitmap is set, false otherwise.
  */
 bool sbitmap_any_bit_set(const struct sbitmap *sb);
-
-/**
- * sbitmap_any_bit_clear() - Check for an unset bit in a &struct
- * sbitmap.
- * @sb: Bitmap to check.
- *
- * Return: true if any bit in the bitmap is clear, false otherwise.
- */
-bool sbitmap_any_bit_clear(const struct sbitmap *sb);
 
 #define SB_NR_TO_INDEX(sb, bitnr) ((bitnr) >> (sb)->shift)
 #define SB_NR_TO_BIT(sb, bitnr) ((bitnr) & ((1U << (sb)->shift) - 1U))

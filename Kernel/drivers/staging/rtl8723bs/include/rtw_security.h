@@ -21,9 +21,6 @@
 
 const char *security_type_str(u8 value);
 
-#define _WPA_IE_ID_	0xdd
-#define _WPA2_IE_ID_	0x30
-
 #define SHA256_MAC_LEN 32
 #define AES_BLOCK_SIZE 16
 #define AES_PRIV_SIZE (4 * 44)
@@ -87,19 +84,17 @@ union Keytype {
 };
 
 
-typedef struct _RT_PMKID_LIST
-{
+typedef struct _RT_PMKID_LIST {
 	u8 				bUsed;
 	u8 				Bssid[6];
 	u8 				PMKID[16];
 	u8 				SsidBuf[33];
-	u8*					ssid_octet;
+	u8 *ssid_octet;
 	u16 					ssid_length;
 } RT_PMKID_LIST, *PRT_PMKID_LIST;
 
 
-struct security_priv
-{
+struct security_priv {
 	u32   dot11AuthAlgrthm;		/*  802.11 auth, could be open, shared, 8021x and authswitch */
 	u32   dot11PrivacyAlgrthm;	/*  This specify the privacy for shared auth. algorithm. */
 
@@ -208,7 +203,7 @@ struct sha256_state {
 };
 
 #define GET_ENCRY_ALGO(psecuritypriv, psta, encry_algo, bmcst)\
-do{\
+do {\
 	switch (psecuritypriv->dot11AuthAlgrthm)\
 	{\
 		case dot11AuthAlgrthm_Open:\
@@ -220,18 +215,18 @@ do{\
 			if (bmcst)\
 				encry_algo = (u8)psecuritypriv->dot118021XGrpPrivacy;\
 			else\
-				encry_algo =(u8) psta->dot118021XPrivacy;\
+				encry_algo = (u8)psta->dot118021XPrivacy;\
 			break;\
 	     case dot11AuthAlgrthm_WAPI:\
 		     encry_algo = (u8)psecuritypriv->dot11PrivacyAlgrthm;\
 		     break;\
-	}\
-}while (0)
+	} \
+} while (0)
 
 #define _AES_IV_LEN_ 8
 
 #define SET_ICE_IV_LEN(iv_len, icv_len, encrypt)\
-do{\
+do {\
 	switch (encrypt)\
 	{\
 		case _WEP40_:\
@@ -255,26 +250,25 @@ do{\
 			iv_len = 0;\
 			icv_len = 0;\
 			break;\
-	}\
-}while (0)
+	} \
+} while (0)
 
 
 #define GET_TKIP_PN(iv, dot11txpn)\
-do{\
-	dot11txpn._byte_.TSC0 =iv[2];\
-	dot11txpn._byte_.TSC1 =iv[0];\
-	dot11txpn._byte_.TSC2 =iv[4];\
-	dot11txpn._byte_.TSC3 =iv[5];\
-	dot11txpn._byte_.TSC4 =iv[6];\
-	dot11txpn._byte_.TSC5 =iv[7];\
-}while (0)
+do {\
+	dot11txpn._byte_.TSC0 = iv[2];\
+	dot11txpn._byte_.TSC1 = iv[0];\
+	dot11txpn._byte_.TSC2 = iv[4];\
+	dot11txpn._byte_.TSC3 = iv[5];\
+	dot11txpn._byte_.TSC4 = iv[6];\
+	dot11txpn._byte_.TSC5 = iv[7];\
+} while (0)
 
 
 #define ROL32(A, n)	(((A) << (n)) | (((A)>>(32-(n)))  & ((1UL << (n)) - 1)))
 #define ROR32(A, n)	ROL32((A), 32-(n))
 
-struct mic_data
-{
+struct mic_data {
 	u32  K0, K1;         /*  Key */
 	u32  L, R;           /*  Current state */
 	u32  M;              /*  Message accumulator (single word) */
@@ -404,13 +398,13 @@ static const unsigned long K[64] = {
 #define MIN(x, y) (((x) < (y)) ? (x) : (y))
 #endif
 int omac1_aes_128(u8 *key, u8 *data, size_t data_len, u8 *mac);
-void rtw_secmicsetkey(struct mic_data *pmicdata, u8 * key);
+void rtw_secmicsetkey(struct mic_data *pmicdata, u8 *key);
 void rtw_secmicappendbyte(struct mic_data *pmicdata, u8 b);
-void rtw_secmicappend(struct mic_data *pmicdata, u8 * src, u32 nBytes);
-void rtw_secgetmic(struct mic_data *pmicdata, u8 * dst);
+void rtw_secmicappend(struct mic_data *pmicdata, u8 *src, u32 nBytes);
+void rtw_secgetmic(struct mic_data *pmicdata, u8 *dst);
 
 void rtw_seccalctkipmic(
-	u8 * key,
+	u8 *key,
 	u8 *header,
 	u8 *data,
 	u32 data_len,
@@ -427,6 +421,6 @@ void rtw_wep_decrypt(struct adapter *padapter, u8  *precvframe);
 u32 rtw_BIP_verify(struct adapter *padapter, u8 *precvframe);
 
 void rtw_sec_restore_wep_key(struct adapter *adapter);
-u8 rtw_handle_tkip_countermeasure(struct adapter * adapter, const char *caller);
+u8 rtw_handle_tkip_countermeasure(struct adapter *adapter, const char *caller);
 
 #endif	/* __RTL871X_SECURITY_H_ */

@@ -35,6 +35,11 @@ struct drm_crtc;
 struct drm_printer;
 struct drm_modeset_acquire_ctx;
 
+enum drm_scaling_filter {
+	DRM_SCALING_FILTER_DEFAULT,
+	DRM_SCALING_FILTER_NEAREST_NEIGHBOR,
+};
+
 /**
  * struct drm_plane_state - mutable plane state
  *
@@ -140,10 +145,11 @@ struct drm_plane_state {
 	 * @zpos:
 	 * Priority of the given plane on crtc (optional).
 	 *
-	 * Note that multiple active planes on the same crtc can have an
-	 * identical zpos value. The rule to solving the conflict is to compare
-	 * the plane object IDs; the plane with a higher ID must be stacked on
-	 * top of a plane with a lower ID.
+	 * User-space may set mutable zpos properties so that multiple active
+	 * planes on the same CRTC have identical zpos values. This is a
+	 * user-space bug, but drivers can solve the conflict by comparing the
+	 * plane object IDs; the plane with a higher ID is stacked on top of a
+	 * plane with a lower ID.
 	 *
 	 * See drm_plane_create_zpos_property() and
 	 * drm_plane_create_zpos_immutable_property() for more details.
@@ -183,8 +189,26 @@ struct drm_plane_state {
 	 */
 	struct drm_property_blob *fb_damage_clips;
 
-	/** @src: clipped source coordinates of the plane (in 16.16) */
-	/** @dst: clipped destination coordinates of the plane */
+	/**
+	 * @src:
+	 *
+	 * source coordinates of the plane (in 16.16).
+	 *
+	 * When using drm_atomic_helper_check_plane_state(),
+	 * the coordinates are clipped, but the driver may choose
+	 * to use unclipped coordinates instead when the hardware
+	 * performs the clipping automatically.
+	 */
+	/**
+	 * @dst:
+	 *
+	 * clipped destination coordinates of the plane.
+	 *
+	 * When using drm_atomic_helper_check_plane_state(),
+	 * the coordinates are clipped, but the driver may choose
+	 * to use unclipped coordinates instead when the hardware
+	 * performs the clipping automatically.
+	 */
 	struct drm_rect src, dst;
 
 	/**
@@ -194,6 +218,13 @@ struct drm_plane_state {
 	 * crtc!=NULL, due to clipping.
 	 */
 	bool visible;
+
+	/**
+	 * @scaling_filter:
+	 *
+	 * Scaling filter to be applied
+	 */
+	enum drm_scaling_filter scaling_filter;
 
 	/**
 	 * @commit: Tracks the pending commit to prevent use-after-free conditions,
@@ -705,6 +736,12 @@ struct drm_plane {
 	 * See drm_plane_create_color_properties().
 	 */
 	struct drm_property *color_range_property;
+
+	/**
+	 * @scaling_filter_property: property to apply a particular filter while
+	 * scaling.
+	 */
+	struct drm_property *scaling_filter_property;
 };
 
 #define obj_to_plane(x) container_of(x, struct drm_plane, base)
@@ -842,5 +879,8 @@ drm_plane_get_damage_clips(const struct drm_plane_state *state)
 	return (struct drm_mode_rect *)((state && state->fb_damage_clips) ?
 					state->fb_damage_clips->data : NULL);
 }
+
+int drm_plane_create_scaling_filter_property(struct drm_plane *plane,
+					     unsigned int supported_filters);
 
 #endif

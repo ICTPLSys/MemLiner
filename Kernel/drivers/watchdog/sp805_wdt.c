@@ -137,9 +137,13 @@ wdt_restart(struct watchdog_device *wdd, unsigned long mode, void *cmd)
 {
 	struct sp805_wdt *wdt = watchdog_get_drvdata(wdd);
 
+	writel_relaxed(UNLOCK, wdt->base + WDTLOCK);
 	writel_relaxed(0, wdt->base + WDTCONTROL);
 	writel_relaxed(0, wdt->base + WDTLOAD);
 	writel_relaxed(INT_ENABLE | RESET_ENABLE, wdt->base + WDTCONTROL);
+
+	/* Flush posted writes. */
+	readl_relaxed(wdt->base + WDTLOCK);
 
 	return 0;
 }
@@ -287,6 +291,7 @@ sp805_wdt_probe(struct amba_device *adev, const struct amba_id *id)
 		set_bit(WDOG_HW_RUNNING, &wdt->wdd.status);
 	}
 
+	watchdog_stop_on_reboot(&wdt->wdd);
 	ret = watchdog_register_device(&wdt->wdd);
 	if (ret)
 		goto err;

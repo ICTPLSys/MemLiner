@@ -52,28 +52,33 @@ static bool map_pte(struct page_vma_mapped_walk *pvmw)
 	return true;
 }
 
-static inline bool pfn_in_hpage(struct page *hpage, unsigned long pfn)
+static inline bool pfn_is_match(struct page *page, unsigned long pfn)
 {
-	unsigned long hpage_pfn = page_to_pfn(hpage);
+	unsigned long page_pfn = page_to_pfn(page);
+
+	/* normal page and hugetlbfs page */
+	if (!PageTransCompound(page) || PageHuge(page))
+		return page_pfn == pfn;
 
 	/* THP can be referenced by any subpage */
-	return pfn >= hpage_pfn && pfn - hpage_pfn < hpage_nr_pages(hpage);
+	return pfn >= page_pfn && pfn - page_pfn < thp_nr_pages(page);
 }
 
 /**
  * check_pte - check if @pvmw->page is mapped at the @pvmw->pte
+ * @pvmw: page_vma_mapped_walk struct, includes a pair pte and page for checking
  *
  * page_vma_mapped_walk() found a place where @pvmw->page is *potentially*
  * mapped. check_pte() has to validate this.
  *
- * @pvmw->pte may point to empty PTE, swap PTE or PTE pointing to arbitrary
- * page.
+ * pvmw->pte may point to empty PTE, swap PTE or PTE pointing to
+ * arbitrary page.
  *
  * If PVMW_MIGRATION flag is set, returns true if @pvmw->pte contains migration
  * entry that points to @pvmw->page or any subpage in case of THP.
  *
- * If PVMW_MIGRATION flag is not set, returns true if @pvmw->pte points to
- * @pvmw->page or any subpage in case of THP.
+ * If PVMW_MIGRATION flag is not set, returns true if pvmw->pte points to
+ * pvmw->page or any subpage in case of THP.
  *
  * Otherwise, return false.
  *
@@ -108,7 +113,7 @@ static bool check_pte(struct page_vma_mapped_walk *pvmw)
 		pfn = pte_pfn(*pvmw->pte);
 	}
 
-	return pfn_in_hpage(pvmw->page, pfn);
+	return pfn_is_match(pvmw->page, pfn);
 }
 
 /**
@@ -223,7 +228,7 @@ next_pte:
 			if (pvmw->address >= pvmw->vma->vm_end ||
 			    pvmw->address >=
 					__vma_address(pvmw->page, pvmw->vma) +
-					hpage_nr_pages(pvmw->page) * PAGE_SIZE)
+					thp_size(pvmw->page))
 				return not_found(pvmw);
 			/* Did we cross page table boundary? */
 			if (pvmw->address % PMD_SIZE == 0) {
@@ -264,7 +269,7 @@ int page_mapped_in_vma(struct page *page, struct vm_area_struct *vma)
 	unsigned long start, end;
 
 	start = __vma_address(page, vma);
-	end = start + PAGE_SIZE * (hpage_nr_pages(page) - 1);
+	end = start + thp_size(page) - PAGE_SIZE;
 
 	if (unlikely(end < vma->vm_start || start >= vma->vm_end))
 		return 0;

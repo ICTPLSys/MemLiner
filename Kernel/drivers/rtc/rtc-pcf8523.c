@@ -12,18 +12,18 @@
 #define DRIVER_NAME "rtc-pcf8523"
 
 #define REG_CONTROL1 0x00
-#define REG_CONTROL1_CAP_SEL (1 << 7)
-#define REG_CONTROL1_STOP    (1 << 5)
+#define REG_CONTROL1_CAP_SEL BIT(7)
+#define REG_CONTROL1_STOP    BIT(5)
 
 #define REG_CONTROL3 0x02
-#define REG_CONTROL3_PM_BLD (1 << 7) /* battery low detection disabled */
-#define REG_CONTROL3_PM_VDD (1 << 6) /* switch-over disabled */
-#define REG_CONTROL3_PM_DSM (1 << 5) /* direct switching mode */
+#define REG_CONTROL3_PM_BLD BIT(7) /* battery low detection disabled */
+#define REG_CONTROL3_PM_VDD BIT(6) /* switch-over disabled */
+#define REG_CONTROL3_PM_DSM BIT(5) /* direct switching mode */
 #define REG_CONTROL3_PM_MASK 0xe0
-#define REG_CONTROL3_BLF (1 << 2) /* battery low bit, read-only */
+#define REG_CONTROL3_BLF BIT(2) /* battery low bit, read-only */
 
 #define REG_SECONDS  0x03
-#define REG_SECONDS_OS (1 << 7)
+#define REG_SECONDS_OS BIT(7)
 
 #define REG_MINUTES  0x04
 #define REG_HOURS    0x05
@@ -34,10 +34,6 @@
 
 #define REG_OFFSET   0x0e
 #define REG_OFFSET_MODE BIT(7)
-
-struct pcf8523 {
-	struct rtc_device *rtc;
-};
 
 static int pcf8523_read(struct i2c_client *client, u8 reg, u8 *valuep)
 {
@@ -112,7 +108,7 @@ static int pcf8523_load_capacitance(struct i2c_client *client)
 	default:
 		dev_warn(&client->dev, "Unknown quartz-load-femtofarads value: %d. Assuming 12500",
 			 load);
-		/* fall through */
+		fallthrough;
 	case 12500:
 		value |= REG_CONTROL1_CAP_SEL;
 		break;
@@ -230,17 +226,6 @@ static int pcf8523_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	u8 regs[8];
 	int err;
 
-	/*
-	 * The hardware can only store values between 0 and 99 in it's YEAR
-	 * register (with 99 overflowing to 0 on increment).
-	 * After 2100-02-28 we could start interpreting the year to be in the
-	 * interval [2100, 2199], but there is no path to switch in a smooth way
-	 * because the chip handles YEAR=0x00 (and the out-of-spec
-	 * YEAR=0xa0) as a leap year, but 2100 isn't.
-	 */
-	if (tm->tm_year < 100 || tm->tm_year >= 200)
-		return -EINVAL;
-
 	err = pcf8523_stop_rtc(client);
 	if (err < 0)
 		return err;
@@ -286,11 +271,11 @@ static int pcf8523_rtc_ioctl(struct device *dev, unsigned int cmd,
 		ret = pcf8523_voltage_low(client);
 		if (ret < 0)
 			return ret;
+		if (ret)
+			ret = RTC_VL_BACKUP_LOW;
 
-		if (copy_to_user((void __user *)arg, &ret, sizeof(int)))
-			return -EFAULT;
+		return put_user(ret, (unsigned int __user *)arg);
 
-		return 0;
 	default:
 		return -ENOIOCTLCMD;
 	}
@@ -345,15 +330,11 @@ static const struct rtc_class_ops pcf8523_rtc_ops = {
 static int pcf8523_probe(struct i2c_client *client,
 			 const struct i2c_device_id *id)
 {
-	struct pcf8523 *pcf;
+	struct rtc_device *rtc;
 	int err;
 
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
 		return -ENODEV;
-
-	pcf = devm_kzalloc(&client->dev, sizeof(*pcf), GFP_KERNEL);
-	if (!pcf)
-		return -ENOMEM;
 
 	err = pcf8523_load_capacitance(client);
 	if (err < 0)
@@ -364,14 +345,15 @@ static int pcf8523_probe(struct i2c_client *client,
 	if (err < 0)
 		return err;
 
-	pcf->rtc = devm_rtc_device_register(&client->dev, DRIVER_NAME,
-				       &pcf8523_rtc_ops, THIS_MODULE);
-	if (IS_ERR(pcf->rtc))
-		return PTR_ERR(pcf->rtc);
+	rtc = devm_rtc_allocate_device(&client->dev);
+	if (IS_ERR(rtc))
+		return PTR_ERR(rtc);
 
-	i2c_set_clientdata(client, pcf);
+	rtc->ops = &pcf8523_rtc_ops;
+	rtc->range_min = RTC_TIMESTAMP_BEGIN_2000;
+	rtc->range_max = RTC_TIMESTAMP_END_2099;
 
-	return 0;
+	return devm_rtc_register_device(rtc);
 }
 
 static const struct i2c_device_id pcf8523_id[] = {

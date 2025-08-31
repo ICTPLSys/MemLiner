@@ -17,18 +17,19 @@ available subsections can be seen below.
    driver-model/index
    basics
    infrastructure
+   ioctl
    early-userspace/index
    pm/index
    clk
    device-io
-   device_connection
    dma-buf
    device_link
    component
    message-based
-   sound
+   infiniband
    frame-buffer
    regulator
+   reset
    iio/index
    input
    usb/index
@@ -37,13 +38,16 @@ available subsections can be seen below.
    spi
    i2c
    ipmb
+   ipmi
    i3c/index
    interconnect
+   devfreq
    hsi
    edac
    scsi
    libata
    target
+   mailbox
    mtdnand
    miscellaneous
    mei/index
@@ -60,6 +64,7 @@ available subsections can be seen below.
    pinctl
    gpio/index
    md/index
+   media/index
    misc_devices
    nfc/index
    dmaengine/index
@@ -68,17 +73,16 @@ available subsections can be seen below.
    thermal/index
    fpga/index
    acpi/index
+   auxiliary_bus
    backlight/lp855x-driver.rst
-   bt8xxgpio
    connector
    console
    dcdbas
-   dell_rbu
-   edid
    eisa
-   ipmb
    isa
    isapnp
+   io-mapping
+   io_ordering
    generic-counter
    lightnvm-pblk
    memory-devices/index
@@ -91,11 +95,10 @@ available subsections can be seen below.
    phy/index
    pti_intel_mid
    pwm
+   pldmfw/index
    rfkill
    serial/index
-   sgi-ioc4
    sm501
-   smsc_ece1099
    switchtec
    sync_file
    vfio-mediated-device

@@ -25,23 +25,15 @@
  */
 
 #include <linux/export.h>
+#include <linux/pci.h>
 
 #include <drm/drm_device.h>
 #include <drm/drm_edid.h>
-#include <drm/drm_pci.h>
 #include <drm/radeon_drm.h>
 
 #include "radeon.h"
 #include "atom.h"
 
-extern int radeon_atom_hw_i2c_xfer(struct i2c_adapter *i2c_adap,
-				   struct i2c_msg *msgs, int num);
-extern u32 radeon_atom_hw_i2c_func(struct i2c_adapter *adap);
-
-/**
- * radeon_ddc_probe
- *
- */
 bool radeon_ddc_probe(struct radeon_connector *radeon_connector, bool use_aux)
 {
 	u8 out = 0x0;

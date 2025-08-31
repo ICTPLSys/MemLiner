@@ -33,6 +33,8 @@ struct nvkm_fb {
 	const struct nvkm_fb_func *func;
 	struct nvkm_subdev subdev;
 
+	struct nvkm_blob vpr_scrubber;
+
 	struct nvkm_ram *ram;
 	struct nvkm_mm tags;
 
@@ -84,6 +86,8 @@ int gp100_fb_new(struct nvkm_device *, int, struct nvkm_fb **);
 int gp102_fb_new(struct nvkm_device *, int, struct nvkm_fb **);
 int gp10b_fb_new(struct nvkm_device *, int, struct nvkm_fb **);
 int gv100_fb_new(struct nvkm_device *, int, struct nvkm_fb **);
+int ga100_fb_new(struct nvkm_device *, int, struct nvkm_fb **);
+int ga102_fb_new(struct nvkm_device *, int, struct nvkm_fb **);
 
 #include <subdev/bios.h>
 #include <subdev/bios/ramcfg.h>

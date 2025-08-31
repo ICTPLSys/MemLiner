@@ -819,13 +819,18 @@ void dce120_tg_set_colors(struct timing_generator *tg,
 
 static void dce120_timing_generator_set_static_screen_control(
 	struct timing_generator *tg,
-	uint32_t value)
+	uint32_t event_triggers,
+	uint32_t num_frames)
 {
 	struct dce110_timing_generator *tg110 = DCE110TG_FROM_TG(tg);
 
+	// By register spec, it only takes 8 bit value
+	if (num_frames > 0xFF)
+		num_frames = 0xFF;
+
 	CRTC_REG_UPDATE_2(CRTC0_CRTC_STATIC_SCREEN_CONTROL,
-			CRTC_STATIC_SCREEN_EVENT_MASK, value,
-			CRTC_STATIC_SCREEN_FRAME_COUNT, 2);
+			CRTC_STATIC_SCREEN_EVENT_MASK, event_triggers,
+			CRTC_STATIC_SCREEN_FRAME_COUNT, num_frames);
 }
 
 void dce120_timing_generator_set_test_pattern(
@@ -1263,7 +1268,7 @@ void dce120_timing_generator_construct(
 	tg110->min_h_front_porch = 0;
 	tg110->min_h_back_porch = 0;
 
-	tg110->min_h_sync_width = 8;
+	tg110->min_h_sync_width = 4;
 	tg110->min_v_sync_width = 1;
 	tg110->min_v_blank = 3;
 }

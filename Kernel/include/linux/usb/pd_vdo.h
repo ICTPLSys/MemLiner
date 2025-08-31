@@ -103,17 +103,25 @@
  * --------------------
  * <31>     :: data capable as a USB host
  * <30>     :: data capable as a USB device
- * <29:27>  :: product type
+ * <29:27>  :: product type (UFP / Cable)
  * <26>     :: modal operation supported (1b == yes)
- * <25:16>  :: Reserved, Shall be set to zero
+ * <25:16>  :: product type (DFP)
  * <15:0>   :: USB-IF assigned VID for this cable vendor
  */
 #define IDH_PTYPE_UNDEF		0
 #define IDH_PTYPE_HUB		1
 #define IDH_PTYPE_PERIPH	2
+#define IDH_PTYPE_PSD		3
+#define IDH_PTYPE_AMA		5
+
 #define IDH_PTYPE_PCABLE	3
 #define IDH_PTYPE_ACABLE	4
-#define IDH_PTYPE_AMA		5
+
+#define IDH_PTYPE_DFP_UNDEF	0
+#define IDH_PTYPE_DFP_HUB	1
+#define IDH_PTYPE_DFP_HOST	2
+#define IDH_PTYPE_DFP_PB	3
+#define IDH_PTYPE_DFP_AMC	4
 
 #define VDO_IDH(usbh, usbd, ptype, is_modal, vid)		\
 	((usbh) << 31 | (usbd) << 30 | ((ptype) & 0x7) << 27	\
@@ -122,6 +130,7 @@
 #define PD_IDH_PTYPE(vdo)	(((vdo) >> 27) & 0x7)
 #define PD_IDH_VID(vdo)		((vdo) & 0xffff)
 #define PD_IDH_MODAL_SUPP(vdo)	((vdo) & (1 << 26))
+#define PD_IDH_DFP_PTYPE(vdo)	(((vdo) >> 23) & 0x7)
 
 /*
  * Cert Stat VDO
@@ -140,12 +149,44 @@
 #define PD_PRODUCT_PID(vdo)	(((vdo) >> 16) & 0xffff)
 
 /*
+ * UFP VDO1
+ * --------
+ * <31:29> :: UFP VDO version
+ * <28>    :: Reserved
+ * <27:24> :: Device capability
+ * <23:6>  :: Reserved
+ * <5:3>   :: Alternate modes
+ * <2:0>   :: USB highest speed
+ */
+#define PD_VDO1_UFP_DEVCAP(vdo)	(((vdo) & GENMASK(27, 24)) >> 24)
+
+#define DEV_USB2_CAPABLE	BIT(0)
+#define DEV_USB2_BILLBOARD	BIT(1)
+#define DEV_USB3_CAPABLE	BIT(2)
+#define DEV_USB4_CAPABLE	BIT(3)
+
+/*
+ * DFP VDO
+ * --------
+ * <31:29> :: DFP VDO version
+ * <28:27> :: Reserved
+ * <26:24> :: Host capability
+ * <23:5>  :: Reserved
+ * <4:0>   :: Port number
+ */
+#define PD_VDO_DFP_HOSTCAP(vdo)	(((vdo) & GENMASK(26, 24)) >> 24)
+
+#define HOST_USB2_CAPABLE	BIT(0)
+#define HOST_USB3_CAPABLE	BIT(1)
+#define HOST_USB4_CAPABLE	BIT(2)
+
+/*
  * Cable VDO
  * ---------
  * <31:28> :: Cable HW version
  * <27:24> :: Cable FW version
  * <23:20> :: Reserved, Shall be set to zero
- * <19:18> :: type-C to Type-A/B/C (00b == A, 01 == B, 10 == C)
+ * <19:18> :: type-C to Type-A/B/C/Captive (00b == A, 01 == B, 10 == C, 11 == Captive)
  * <17>    :: Type-C to Plug/Receptacle (0b == plug, 1b == receptacle)
  * <16:13> :: cable latency (0001 == <10ns(~1m length))
  * <12:11> :: cable termination type (11b == both ends active VCONN req)
@@ -161,6 +202,7 @@
 #define CABLE_ATYPE		0
 #define CABLE_BTYPE		1
 #define CABLE_CTYPE		2
+#define CABLE_CAPTIVE		3
 #define CABLE_PLUG		0
 #define CABLE_RECEPTACLE	1
 #define CABLE_CURR_1A5		0
@@ -176,6 +218,7 @@
 	 | (tx1d) << 10 | (tx2d) << 9 | (rx1d) << 8 | (rx2d) << 7	\
 	 | ((cur) & 0x3) << 5 | (vps) << 4 | (sopp) << 3		\
 	 | ((usbss) & 0x7))
+#define VDO_TYPEC_CABLE_TYPE(vdo)	(((vdo) >> 18) & 0x3)
 
 /*
  * AMA VDO
@@ -217,7 +260,7 @@
  * SVDM Discover SVIDs request -> response
  *
  * Request is properly formatted VDM Header with discover SVIDs command.
- * Response is a set of SVIDs of all all supported SVIDs with all zero's to
+ * Response is a set of SVIDs of all supported SVIDs with all zero's to
  * mark the end of SVIDs.  If more than 12 SVIDs are supported command SHOULD be
  * repeated.
  */

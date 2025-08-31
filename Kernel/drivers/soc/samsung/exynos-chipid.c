@@ -3,7 +3,7 @@
  * Copyright (c) 2019 Samsung Electronics Co., Ltd.
  *	      http://www.samsung.com/
  *
- * EXYNOS - CHIP ID support
+ * Exynos - CHIP ID support
  * Author: Pankaj Dubey <pankaj.dubey@samsung.com>
  * Author: Bartlomiej Zolnierkiewicz <b.zolnierkie@samsung.com>
  */
@@ -20,6 +20,7 @@ static const struct exynos_soc_id {
 	const char *name;
 	unsigned int id;
 } soc_ids[] = {
+	/* List ordered by SoC name */
 	{ "EXYNOS3250", 0xE3472000 },
 	{ "EXYNOS4210", 0x43200000 },	/* EVT0 revision */
 	{ "EXYNOS4210", 0x43210000 },
@@ -29,10 +30,10 @@ static const struct exynos_soc_id {
 	{ "EXYNOS5260", 0xE5260000 },
 	{ "EXYNOS5410", 0xE5410000 },
 	{ "EXYNOS5420", 0xE5420000 },
+	{ "EXYNOS5433", 0xE5433000 },
 	{ "EXYNOS5440", 0xE5440000 },
 	{ "EXYNOS5800", 0xE5422000 },
 	{ "EXYNOS7420", 0xE7420000 },
-	{ "EXYNOS5433", 0xE5433000 },
 };
 
 static const char * __init product_id_to_soc_id(unsigned int product_id)
@@ -45,17 +46,25 @@ static const char * __init product_id_to_soc_id(unsigned int product_id)
 	return NULL;
 }
 
-int __init exynos_chipid_early_init(void)
+static int __init exynos_chipid_early_init(void)
 {
 	struct soc_device_attribute *soc_dev_attr;
 	struct soc_device *soc_dev;
 	struct device_node *root;
+	struct device_node *syscon;
 	struct regmap *regmap;
 	u32 product_id;
 	u32 revision;
 	int ret;
 
-	regmap = syscon_regmap_lookup_by_compatible("samsung,exynos4210-chipid");
+	syscon = of_find_compatible_node(NULL, NULL,
+					 "samsung,exynos4210-chipid");
+	if (!syscon)
+		return -ENODEV;
+
+	regmap = device_node_to_regmap(syscon);
+	of_node_put(syscon);
+
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
 
@@ -90,9 +99,9 @@ int __init exynos_chipid_early_init(void)
 		goto err;
 	}
 
-	/* it is too early to use dev_info() here (soc_dev is NULL) */
-	pr_info("soc soc0: Exynos: CPU[%s] PRO_ID[0x%x] REV[0x%x] Detected\n",
-		soc_dev_attr->soc_id, product_id, revision);
+	dev_info(soc_device_to_device(soc_dev),
+		 "Exynos: CPU[%s] PRO_ID[0x%x] REV[0x%x] Detected\n",
+		 soc_dev_attr->soc_id, product_id, revision);
 
 	return 0;
 
@@ -102,4 +111,4 @@ err:
 	return ret;
 }
 
-early_initcall(exynos_chipid_early_init);
+arch_initcall(exynos_chipid_early_init);

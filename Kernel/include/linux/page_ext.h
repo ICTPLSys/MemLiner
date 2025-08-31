@@ -22,7 +22,6 @@ enum page_ext_flags {
 #if defined(CONFIG_IDLE_PAGE_TRACKING) && !defined(CONFIG_64BIT)
 	PAGE_EXT_YOUNG,
 	PAGE_EXT_IDLE,
-	PAGE_EXT_PREFETCH,	/* [ADC] profiling swap cache stats */
 #endif
 };
 
@@ -45,8 +44,12 @@ static inline void page_ext_init_flatmem(void)
 {
 }
 extern void page_ext_init(void);
+static inline void page_ext_init_flatmem_late(void)
+{
+}
 #else
 extern void page_ext_init_flatmem(void);
+extern void page_ext_init_flatmem_late(void);
 static inline void page_ext_init(void)
 {
 }
@@ -74,6 +77,10 @@ static inline struct page_ext *lookup_page_ext(const struct page *page)
 }
 
 static inline void page_ext_init(void)
+{
+}
+
+static inline void page_ext_init_flatmem_late(void)
 {
 }
 

@@ -38,26 +38,6 @@ static inline void clear_page_idle(struct page *page)
 {
 	ClearPageIdle(page);
 }
-
-static inline bool page_is_prefetch(struct page *page)
-{
-	return PagePrefetch(page);
-}
-
-static inline void set_page_prefetch(struct page *page)
-{
-	SetPagePrefetch(page);
-}
-
-static inline void clear_page_prefetch(struct page *page)
-{
-	ClearPagePrefetch(page);
-}
-
-static inline bool test_and_clear_page_prefetch(struct page *page)
-{
-	return TestClearPagePrefetch(page);
-}
 #else /* !CONFIG_64BIT */
 /*
  * If there is not enough space to store Idle and Young bits in page flags, use
@@ -124,46 +104,6 @@ static inline void clear_page_idle(struct page *page)
 
 	clear_bit(PAGE_EXT_IDLE, &page_ext->flags);
 }
-
-static inline bool page_is_prefetch(struct page *page)
-{
-	struct page_ext *page_ext = lookup_page_ext(page);
-
-	if (unlikely(!page_ext))
-		return false;
-
-	return test_bit(PAGE_EXT_PREFETCH, &page_ext->flags);
-}
-
-static inline void set_page_prefetch(struct page *page)
-{
-	struct page_ext *page_ext = lookup_page_ext(page);
-
-	if (unlikely(!page_ext))
-		return;
-
-	set_bit(PAGE_EXT_PREFETCH, &page_ext->flags);
-}
-
-static inline void clear_page_prefetch(struct page *page)
-{
-	struct page_ext *page_ext = lookup_page_ext(page);
-
-	if (unlikely(!page_ext))
-		return;
-
-	clear_bit(PAGE_EXT_PREFETCH, &page_ext->flags);
-}
-
-static inline bool test_and_clear_page_prefetch(struct page *page)
-{
-	struct page_ext *page_ext = lookup_page_ext(page);
-
-	if (unlikely(!page_ext))
-		return false;
-
-	return test_and_clear_bit(PAGE_EXT_PREFETCH, &page_ext->flags);
-}
 #endif /* CONFIG_64BIT */
 
 #else /* !CONFIG_IDLE_PAGE_TRACKING */
@@ -195,23 +135,6 @@ static inline void clear_page_idle(struct page *page)
 {
 }
 
-static inline bool page_is_prefetch(struct page *page)
-{
-	return false;
-}
-
-static inline void set_page_prefetch(struct page *page)
-{
-}
-
-static inline void clear_page_prefetch(struct page *page)
-{
-}
-
-static inline bool test_and_clear_page_prefetch(struct page *page)
-{
-	return false;
-}
 #endif /* CONFIG_IDLE_PAGE_TRACKING */
 
 #endif /* _LINUX_MM_PAGE_IDLE_H */

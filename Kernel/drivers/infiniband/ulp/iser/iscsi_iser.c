@@ -187,23 +187,14 @@ iser_initialize_task_headers(struct iscsi_task *task,
 	struct iser_device *device = iser_conn->ib_conn.device;
 	struct iscsi_iser_task *iser_task = task->dd_data;
 	u64 dma_addr;
-	const bool mgmt_task = !task->sc && !in_interrupt();
-	int ret = 0;
 
-	if (unlikely(mgmt_task))
-		mutex_lock(&iser_conn->state_mutex);
-
-	if (unlikely(iser_conn->state != ISER_CONN_UP)) {
-		ret = -ENODEV;
-		goto out;
-	}
+	if (unlikely(iser_conn->state != ISER_CONN_UP))
+		return -ENODEV;
 
 	dma_addr = ib_dma_map_single(device->ib_device, (void *)tx_desc,
 				ISER_HEADERS_LEN, DMA_TO_DEVICE);
-	if (ib_dma_mapping_error(device->ib_device, dma_addr)) {
-		ret = -ENOMEM;
-		goto out;
-	}
+	if (ib_dma_mapping_error(device->ib_device, dma_addr))
+		return -ENOMEM;
 
 	tx_desc->inv_wr.next = NULL;
 	tx_desc->reg_wr.wr.next = NULL;
@@ -214,11 +205,8 @@ iser_initialize_task_headers(struct iscsi_task *task,
 	tx_desc->tx_sg[0].lkey   = device->pd->local_dma_lkey;
 
 	iser_task->iser_conn = iser_conn;
-out:
-	if (unlikely(mgmt_task))
-		mutex_unlock(&iser_conn->state_mutex);
 
-	return ret;
+	return 0;
 }
 
 /**
@@ -646,13 +634,14 @@ iscsi_iser_session_create(struct iscsi_endpoint *ep,
 		if (ib_conn->pi_support) {
 			u32 sig_caps = ib_dev->attrs.sig_prot_cap;
 
+			shost->sg_prot_tablesize = shost->sg_tablesize;
 			scsi_host_set_prot(shost, iser_dif_prot_caps(sig_caps));
 			scsi_host_set_guard(shost, SHOST_DIX_GUARD_IP |
 						   SHOST_DIX_GUARD_CRC);
 		}
 
 		if (!(ib_dev->attrs.device_cap_flags & IB_DEVICE_SG_GAPS_REG))
-			shost->virt_boundary_mask = ~MASK_4K;
+			shost->virt_boundary_mask = SZ_4K - 1;
 
 		if (iscsi_host_add(shost, ib_dev->dev.parent)) {
 			mutex_unlock(&iser_conn->state_mutex);
@@ -738,7 +727,7 @@ iscsi_iser_set_param(struct iscsi_cls_conn *cls_conn,
 }
 
 /**
- * iscsi_iser_set_param() - set class connection parameter
+ * iscsi_iser_conn_get_stats() - get iscsi connection statistics
  * @cls_conn:    iscsi class connection
  * @stats:       iscsi stats to output
  *
@@ -785,7 +774,7 @@ static int iscsi_iser_get_ep_param(struct iscsi_endpoint *ep,
  * iscsi_iser_ep_connect() - Initiate iSER connection establishment
  * @shost:          scsi_host
  * @dst_addr:       destination address
- * @non-blocking:   indicate if routine can block
+ * @non_blocking:   indicate if routine can block
  *
  * Allocate an iscsi endpoint, an iser_conn structure and bind them.
  * After that start RDMA connection establishment via rdma_cm. We

@@ -55,7 +55,7 @@ struct gpio_keys_drvdata {
 	struct input_dev *input;
 	struct mutex disable_lock;
 	unsigned short *keymap;
-	struct gpio_button_data data[0];
+	struct gpio_button_data data[];
 };
 
 /*
@@ -108,7 +108,7 @@ static int get_n_events_by_type(int type)
 
 /**
  * get_bm_events_by_type() - returns bitmap of supported events per @type
- * @input: input device from which bitmap is retrieved
+ * @dev: input device from which bitmap is retrieved
  * @type: type of button (%EV_KEY, %EV_SW)
  *
  * Return value of this function can be used to allocate bitmap
@@ -494,10 +494,8 @@ static int gpio_keys_setup_key(struct platform_device *pdev,
 	spin_lock_init(&bdata->lock);
 
 	if (child) {
-		bdata->gpiod = devm_fwnode_get_gpiod_from_child(dev, NULL,
-								child,
-								GPIOD_IN,
-								desc);
+		bdata->gpiod = devm_fwnode_gpiod_get(dev, child,
+						     NULL, GPIOD_IN, desc);
 		if (IS_ERR(bdata->gpiod)) {
 			error = PTR_ERR(bdata->gpiod);
 			if (error == -ENOENT) {
@@ -576,7 +574,6 @@ static int gpio_keys_setup_key(struct platform_device *pdev,
 				IRQ_TYPE_EDGE_RISING : IRQ_TYPE_EDGE_FALLING;
 			break;
 		case EV_ACT_ANY:
-			/* fall through */
 		default:
 			/*
 			 * For other cases, we are OK letting suspend/resume
@@ -968,7 +965,7 @@ static int __maybe_unused gpio_keys_suspend(struct device *dev)
 			return error;
 	} else {
 		mutex_lock(&input->mutex);
-		if (input->users)
+		if (input_device_enabled(input))
 			gpio_keys_close(input);
 		mutex_unlock(&input->mutex);
 	}
@@ -986,7 +983,7 @@ static int __maybe_unused gpio_keys_resume(struct device *dev)
 		gpio_keys_disable_wakeup(ddata);
 	} else {
 		mutex_lock(&input->mutex);
-		if (input->users)
+		if (input_device_enabled(input))
 			error = gpio_keys_open(input);
 		mutex_unlock(&input->mutex);
 	}

@@ -1,66 +1,9 @@
-/******************************************************************************
- *
- * This file is provided under a dual BSD/GPLv2 license.  When using or
- * redistributing this file, you may do so under either license.
- *
- * GPL LICENSE SUMMARY
- *
- * Copyright(c) 2003 - 2014 Intel Corporation. All rights reserved.
- * Copyright(c) 2013 - 2015 Intel Mobile Communications GmbH
- * Copyright(c) 2016 - 2017 Intel Deutschland GmbH
- * Copyright(c) 2018 - 2019 Intel Corporation
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of version 2 of the GNU General Public License as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * The full GNU General Public License is included in this distribution in the
- * file called COPYING.
- *
- * Contact Information:
- *  Intel Linux Wireless <linuxwifi@intel.com>
- * Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
- *
- * BSD LICENSE
- *
- * Copyright(c) 2003 - 2014 Intel Corporation. All rights reserved.
- * Copyright(c) 2013 - 2015 Intel Mobile Communications GmbH
- * Copyright(c) 2016 - 2017 Intel Deutschland GmbH
- * Copyright(c) 2018 - 2019 Intel Corporation
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- *  * Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
- *  * Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
- *  * Neither the name Intel Corporation nor the names of its
- *    contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- *****************************************************************************/
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*
+ * Copyright (C) 2003-2014, 2018-2020 Intel Corporation
+ * Copyright (C) 2013-2015 Intel Mobile Communications GmbH
+ * Copyright (C) 2016-2017 Intel Deutschland GmbH
+ */
 #include <linux/sched.h>
 #include <linux/wait.h>
 #include <linux/gfp.h>
@@ -200,8 +143,8 @@ static inline __le32 iwl_pcie_dma_addr2rbd_ptr(dma_addr_t dma_addr)
  */
 int iwl_pcie_rx_stop(struct iwl_trans *trans)
 {
-	if (trans->trans_cfg->device_family >= IWL_DEVICE_FAMILY_22560) {
-		/* TODO: remove this for 22560 once fw does it */
+	if (trans->trans_cfg->device_family >= IWL_DEVICE_FAMILY_AX210) {
+		/* TODO: remove this once fw does it */
 		iwl_write_umac_prph(trans, RFH_RXF_DMA_CFG_GEN3, 0);
 		return iwl_poll_umac_prph_bit(trans, RFH_GEN_STATUS_GEN3,
 					      RXF_DMA_IDLE, RXF_DMA_IDLE, 1000);
@@ -240,18 +183,14 @@ static void iwl_pcie_rxq_inc_wr_ptr(struct iwl_trans *trans,
 			IWL_DEBUG_INFO(trans, "Rx queue requesting wakeup, GP1 = 0x%x\n",
 				       reg);
 			iwl_set_bit(trans, CSR_GP_CNTRL,
-				    BIT(trans->trans_cfg->csr->flag_mac_access_req));
+				    CSR_GP_CNTRL_REG_FLAG_MAC_ACCESS_REQ);
 			rxq->need_update = true;
 			return;
 		}
 	}
 
 	rxq->write_actual = round_down(rxq->write, 8);
-	if (trans->trans_cfg->device_family == IWL_DEVICE_FAMILY_22560)
-		iwl_write32(trans, HBUS_TARG_WRPTR,
-			    (rxq->write_actual |
-			     ((FIRST_RX_QUEUE + rxq->id) << 16)));
-	else if (trans->trans_cfg->mq_rx_supported)
+	if (trans->trans_cfg->mq_rx_supported)
 		iwl_write32(trans, RFH_Q_FRBDCB_WIDX_TRG(rxq->id),
 			    rxq->write_actual);
 	else
@@ -279,7 +218,7 @@ static void iwl_pcie_restock_bd(struct iwl_trans *trans,
 				struct iwl_rxq *rxq,
 				struct iwl_rx_mem_buffer *rxb)
 {
-	if (trans->trans_cfg->device_family >= IWL_DEVICE_FAMILY_22560) {
+	if (trans->trans_cfg->device_family >= IWL_DEVICE_FAMILY_AX210) {
 		struct iwl_rx_transfer_desc *bd = rxq->bd;
 
 		BUILD_BUG_ON(sizeof(*bd) != 2 * sizeof(u64));
@@ -302,6 +241,7 @@ static void iwl_pcie_restock_bd(struct iwl_trans *trans,
 static void iwl_pcie_rxmq_restock(struct iwl_trans *trans,
 				  struct iwl_rxq *rxq)
 {
+	struct iwl_trans_pcie *trans_pcie = IWL_TRANS_GET_PCIE_TRANS(trans);
 	struct iwl_rx_mem_buffer *rxb;
 
 	/*
@@ -322,11 +262,11 @@ static void iwl_pcie_rxmq_restock(struct iwl_trans *trans,
 				       list);
 		list_del(&rxb->list);
 		rxb->invalid = false;
-		/* 12 first bits are expected to be empty */
-		WARN_ON(rxb->page_dma & DMA_BIT_MASK(12));
+		/* some low bits are expected to be unset (depending on hw) */
+		WARN_ON(rxb->page_dma & trans_pcie->supported_dma_mask);
 		/* Point to Rx buffer via next RBD in circular buffer */
 		iwl_pcie_restock_bd(trans, rxq, rxb);
-		rxq->write = (rxq->write + 1) & MQ_RX_TABLE_MASK;
+		rxq->write = (rxq->write + 1) & (rxq->queue_size - 1);
 		rxq->free_count--;
 	}
 	spin_unlock(&rxq->lock);
@@ -416,14 +356,33 @@ void iwl_pcie_rxq_restock(struct iwl_trans *trans, struct iwl_rxq *rxq)
  *
  */
 static struct page *iwl_pcie_rx_alloc_page(struct iwl_trans *trans,
-					   gfp_t priority)
+					   u32 *offset, gfp_t priority)
 {
 	struct iwl_trans_pcie *trans_pcie = IWL_TRANS_GET_PCIE_TRANS(trans);
+	unsigned int rbsize = iwl_trans_get_rb_size(trans_pcie->rx_buf_size);
+	unsigned int allocsize = PAGE_SIZE << trans_pcie->rx_page_order;
 	struct page *page;
 	gfp_t gfp_mask = priority;
 
 	if (trans_pcie->rx_page_order > 0)
 		gfp_mask |= __GFP_COMP;
+
+	if (trans_pcie->alloc_page) {
+		spin_lock_bh(&trans_pcie->alloc_page_lock);
+		/* recheck */
+		if (trans_pcie->alloc_page) {
+			*offset = trans_pcie->alloc_page_used;
+			page = trans_pcie->alloc_page;
+			trans_pcie->alloc_page_used += rbsize;
+			if (trans_pcie->alloc_page_used >= allocsize)
+				trans_pcie->alloc_page = NULL;
+			else
+				get_page(page);
+			spin_unlock_bh(&trans_pcie->alloc_page_lock);
+			return page;
+		}
+		spin_unlock_bh(&trans_pcie->alloc_page_lock);
+	}
 
 	/* Alloc a new receive buffer */
 	page = alloc_pages(gfp_mask, trans_pcie->rx_page_order);
@@ -440,6 +399,18 @@ static struct page *iwl_pcie_rx_alloc_page(struct iwl_trans *trans,
 				 "Failed to alloc_pages\n");
 		return NULL;
 	}
+
+	if (2 * rbsize <= allocsize) {
+		spin_lock_bh(&trans_pcie->alloc_page_lock);
+		if (!trans_pcie->alloc_page) {
+			get_page(page);
+			trans_pcie->alloc_page = page;
+			trans_pcie->alloc_page_used = rbsize;
+		}
+		spin_unlock_bh(&trans_pcie->alloc_page_lock);
+	}
+
+	*offset = 0;
 	return page;
 }
 
@@ -460,6 +431,8 @@ void iwl_pcie_rxq_alloc_rbs(struct iwl_trans *trans, gfp_t priority,
 	struct page *page;
 
 	while (1) {
+		unsigned int offset;
+
 		spin_lock(&rxq->lock);
 		if (list_empty(&rxq->rx_used)) {
 			spin_unlock(&rxq->lock);
@@ -467,8 +440,7 @@ void iwl_pcie_rxq_alloc_rbs(struct iwl_trans *trans, gfp_t priority,
 		}
 		spin_unlock(&rxq->lock);
 
-		/* Alloc a new receive buffer */
-		page = iwl_pcie_rx_alloc_page(trans, priority);
+		page = iwl_pcie_rx_alloc_page(trans, &offset, priority);
 		if (!page)
 			return;
 
@@ -486,10 +458,11 @@ void iwl_pcie_rxq_alloc_rbs(struct iwl_trans *trans, gfp_t priority,
 
 		BUG_ON(rxb->page);
 		rxb->page = page;
+		rxb->offset = offset;
 		/* Get physical address of the RB */
 		rxb->page_dma =
-			dma_map_page(trans->dev, page, 0,
-				     PAGE_SIZE << trans_pcie->rx_page_order,
+			dma_map_page(trans->dev, page, rxb->offset,
+				     trans_pcie->rx_buf_bytes,
 				     DMA_FROM_DEVICE);
 		if (dma_mapping_error(trans->dev, rxb->page_dma)) {
 			rxb->page = NULL;
@@ -514,12 +487,11 @@ void iwl_pcie_free_rbs_pool(struct iwl_trans *trans)
 	struct iwl_trans_pcie *trans_pcie = IWL_TRANS_GET_PCIE_TRANS(trans);
 	int i;
 
-	for (i = 0; i < RX_POOL_SIZE; i++) {
+	for (i = 0; i < RX_POOL_SIZE(trans_pcie->num_rx_bufs); i++) {
 		if (!trans_pcie->rx_pool[i].page)
 			continue;
 		dma_unmap_page(trans->dev, trans_pcie->rx_pool[i].page_dma,
-			       PAGE_SIZE << trans_pcie->rx_page_order,
-			       DMA_FROM_DEVICE);
+			       trans_pcie->rx_buf_bytes, DMA_FROM_DEVICE);
 		__free_pages(trans_pcie->rx_pool[i].page,
 			     trans_pcie->rx_page_order);
 		trans_pcie->rx_pool[i].page = NULL;
@@ -572,15 +544,17 @@ static void iwl_pcie_rx_allocator(struct iwl_trans *trans)
 			BUG_ON(rxb->page);
 
 			/* Alloc a new receive buffer */
-			page = iwl_pcie_rx_alloc_page(trans, gfp_mask);
+			page = iwl_pcie_rx_alloc_page(trans, &rxb->offset,
+						      gfp_mask);
 			if (!page)
 				continue;
 			rxb->page = page;
 
 			/* Get physical address of the RB */
-			rxb->page_dma = dma_map_page(trans->dev, page, 0,
-					PAGE_SIZE << trans_pcie->rx_page_order,
-					DMA_FROM_DEVICE);
+			rxb->page_dma = dma_map_page(trans->dev, page,
+						     rxb->offset,
+						     trans_pcie->rx_buf_bytes,
+						     DMA_FROM_DEVICE);
 			if (dma_mapping_error(trans->dev, rxb->page_dma)) {
 				rxb->page = NULL;
 				__free_pages(page, trans_pcie->rx_page_order);
@@ -691,7 +665,7 @@ static void iwl_pcie_free_rxq_dma(struct iwl_trans *trans,
 {
 	struct device *dev = trans->dev;
 	bool use_rx_td = (trans->trans_cfg->device_family >=
-			  IWL_DEVICE_FAMILY_22560);
+			  IWL_DEVICE_FAMILY_AX210);
 	int free_size = iwl_pcie_free_bd_size(trans, use_rx_td);
 
 	if (rxq->bd)
@@ -712,7 +686,7 @@ static void iwl_pcie_free_rxq_dma(struct iwl_trans *trans,
 	rxq->used_bd_dma = 0;
 	rxq->used_bd = NULL;
 
-	if (trans->trans_cfg->device_family < IWL_DEVICE_FAMILY_22560)
+	if (trans->trans_cfg->device_family < IWL_DEVICE_FAMILY_AX210)
 		return;
 
 	if (rxq->tr_tail)
@@ -736,13 +710,13 @@ static int iwl_pcie_alloc_rxq_dma(struct iwl_trans *trans,
 	int i;
 	int free_size;
 	bool use_rx_td = (trans->trans_cfg->device_family >=
-			  IWL_DEVICE_FAMILY_22560);
+			  IWL_DEVICE_FAMILY_AX210);
 	size_t rb_stts_size = use_rx_td ? sizeof(__le16) :
 			      sizeof(struct iwl_rb_status);
 
 	spin_lock_init(&rxq->lock);
 	if (trans->trans_cfg->mq_rx_supported)
-		rxq->queue_size = MQ_RX_TABLE_SIZE;
+		rxq->queue_size = trans->cfg->num_rbds;
 	else
 		rxq->queue_size = RX_QUEUE_SIZE;
 
@@ -784,11 +758,6 @@ static int iwl_pcie_alloc_rxq_dma(struct iwl_trans *trans,
 					  &rxq->cr_tail_dma, GFP_KERNEL);
 	if (!rxq->cr_tail)
 		goto err;
-	/*
-	 * W/A 22560 device step Z0 must be non zero bug
-	 * TODO: remove this when stop supporting Z0
-	 */
-	*rxq->cr_tail = cpu_to_le16(500);
 
 	return 0;
 
@@ -802,13 +771,13 @@ err:
 	return -ENOMEM;
 }
 
-int iwl_pcie_rx_alloc(struct iwl_trans *trans)
+static int iwl_pcie_rx_alloc(struct iwl_trans *trans)
 {
 	struct iwl_trans_pcie *trans_pcie = IWL_TRANS_GET_PCIE_TRANS(trans);
 	struct iwl_rb_allocator *rba = &trans_pcie->rba;
 	int i, ret;
 	size_t rb_stts_size = trans->trans_cfg->device_family >=
-			      IWL_DEVICE_FAMILY_22560 ?
+				IWL_DEVICE_FAMILY_AX210 ?
 			      sizeof(__le16) : sizeof(struct iwl_rb_status);
 
 	if (WARN_ON(trans_pcie->rxq))
@@ -816,8 +785,18 @@ int iwl_pcie_rx_alloc(struct iwl_trans *trans)
 
 	trans_pcie->rxq = kcalloc(trans->num_rx_queues, sizeof(struct iwl_rxq),
 				  GFP_KERNEL);
-	if (!trans_pcie->rxq)
-		return -ENOMEM;
+	trans_pcie->rx_pool = kcalloc(RX_POOL_SIZE(trans_pcie->num_rx_bufs),
+				      sizeof(trans_pcie->rx_pool[0]),
+				      GFP_KERNEL);
+	trans_pcie->global_table =
+		kcalloc(RX_POOL_SIZE(trans_pcie->num_rx_bufs),
+			sizeof(trans_pcie->global_table[0]),
+			GFP_KERNEL);
+	if (!trans_pcie->rxq || !trans_pcie->rx_pool ||
+	    !trans_pcie->global_table) {
+		ret = -ENOMEM;
+		goto err;
+	}
 
 	spin_lock_init(&rba->lock);
 
@@ -854,6 +833,8 @@ err:
 		trans_pcie->base_rb_stts = NULL;
 		trans_pcie->base_rb_stts_dma = 0;
 	}
+	kfree(trans_pcie->rx_pool);
+	kfree(trans_pcie->global_table);
 	kfree(trans_pcie->rxq);
 
 	return ret;
@@ -1005,7 +986,7 @@ static void iwl_pcie_rx_mq_hw_init(struct iwl_trans *trans)
 			       RFH_GEN_CFG_VAL(DEFAULT_RXQ_NUM, 0) |
 			       RFH_GEN_CFG_SERVICE_DMA_SNOOP |
 			       RFH_GEN_CFG_VAL(RB_CHUNK_SIZE,
-					       trans->cfg->integrated ?
+					       trans->trans_cfg->integrated ?
 					       RFH_GEN_CFG_RB_CHUNK_SIZE_64 :
 					       RFH_GEN_CFG_RB_CHUNK_SIZE_128));
 	/* Enable the relevant rx queues */
@@ -1033,7 +1014,7 @@ int iwl_pcie_dummy_napi_poll(struct napi_struct *napi, int budget)
 	return 0;
 }
 
-int _iwl_pcie_rx_init(struct iwl_trans *trans)
+static int _iwl_pcie_rx_init(struct iwl_trans *trans)
 {
 	struct iwl_trans_pcie *trans_pcie = IWL_TRANS_GET_PCIE_TRANS(trans);
 	struct iwl_rxq *def_rxq;
@@ -1074,8 +1055,9 @@ int _iwl_pcie_rx_init(struct iwl_trans *trans)
 		rxq->read = 0;
 		rxq->write = 0;
 		rxq->write_actual = 0;
-		memset(rxq->rb_stts, 0, (trans->trans_cfg->device_family >=
-					 IWL_DEVICE_FAMILY_22560) ?
+		memset(rxq->rb_stts, 0,
+		       (trans->trans_cfg->device_family >=
+			IWL_DEVICE_FAMILY_AX210) ?
 		       sizeof(__le16) : sizeof(struct iwl_rb_status));
 
 		iwl_pcie_rx_init_rxb_lists(rxq);
@@ -1089,12 +1071,11 @@ int _iwl_pcie_rx_init(struct iwl_trans *trans)
 
 	/* move the pool to the default queue and allocator ownerships */
 	queue_size = trans->trans_cfg->mq_rx_supported ?
-		     MQ_RX_NUM_RBDS : RX_QUEUE_SIZE;
+			trans_pcie->num_rx_bufs - 1 : RX_QUEUE_SIZE;
 	allocator_pool_size = trans->num_rx_queues *
 		(RX_CLAIM_REQ_ALLOC - RX_POST_REQ_ALLOC);
 	num_alloc = queue_size + allocator_pool_size;
-	BUILD_BUG_ON(ARRAY_SIZE(trans_pcie->global_table) !=
-		     ARRAY_SIZE(trans_pcie->rx_pool));
+
 	for (i = 0; i < num_alloc; i++) {
 		struct iwl_rx_mem_buffer *rxb = &trans_pcie->rx_pool[i];
 
@@ -1152,7 +1133,7 @@ void iwl_pcie_rx_free(struct iwl_trans *trans)
 	struct iwl_rb_allocator *rba = &trans_pcie->rba;
 	int i;
 	size_t rb_stts_size = trans->trans_cfg->device_family >=
-			      IWL_DEVICE_FAMILY_22560 ?
+				IWL_DEVICE_FAMILY_AX210 ?
 			      sizeof(__le16) : sizeof(struct iwl_rb_status);
 
 	/*
@@ -1185,7 +1166,12 @@ void iwl_pcie_rx_free(struct iwl_trans *trans)
 		if (rxq->napi.poll)
 			netif_napi_del(&rxq->napi);
 	}
+	kfree(trans_pcie->rx_pool);
+	kfree(trans_pcie->global_table);
 	kfree(trans_pcie->rxq);
+
+	if (trans_pcie->alloc_page)
+		__free_pages(trans_pcie->alloc_page, trans_pcie->rx_page_order);
 }
 
 static void iwl_pcie_rx_move_to_allocator(struct iwl_rxq *rxq,
@@ -1241,9 +1227,9 @@ static void iwl_pcie_rx_handle_rb(struct iwl_trans *trans,
 				int i)
 {
 	struct iwl_trans_pcie *trans_pcie = IWL_TRANS_GET_PCIE_TRANS(trans);
-	struct iwl_txq *txq = trans_pcie->txq[trans_pcie->cmd_queue];
+	struct iwl_txq *txq = trans->txqs.txq[trans->txqs.cmd.q_id];
 	bool page_stolen = false;
-	int max_len = PAGE_SIZE << trans_pcie->rx_page_order;
+	int max_len = trans_pcie->rx_buf_bytes;
 	u32 offset = 0;
 
 	if (WARN_ON(!rxb))
@@ -1253,11 +1239,10 @@ static void iwl_pcie_rx_handle_rb(struct iwl_trans *trans,
 
 	while (offset + sizeof(u32) + sizeof(struct iwl_cmd_header) < max_len) {
 		struct iwl_rx_packet *pkt;
-		u16 sequence;
 		bool reclaim;
-		int index, cmd_index, len;
+		int len;
 		struct iwl_rx_cmd_buffer rxcb = {
-			._offset = offset,
+			._offset = rxb->offset + offset,
 			._rx_page_order = trans_pcie->rx_page_order,
 			._page = rxb->page,
 			._page_stolen = false,
@@ -1292,6 +1277,13 @@ static void iwl_pcie_rx_handle_rb(struct iwl_trans *trans,
 
 		len = iwl_rx_packet_len(pkt);
 		len += sizeof(u32); /* account for status word */
+
+		offset += ALIGN(len, FH_RSCSR_FRAME_ALIGN);
+
+		/* check that what the device tells us made sense */
+		if (offset > max_len)
+			break;
+
 		trace_iwlwifi_dev_rx(trans->dev, trans, pkt, len);
 		trace_iwlwifi_dev_rx_data(trans->dev, trans, pkt, len);
 
@@ -1314,10 +1306,6 @@ static void iwl_pcie_rx_handle_rb(struct iwl_trans *trans,
 			}
 		}
 
-		sequence = le16_to_cpu(pkt->hdr.sequence);
-		index = SEQ_TO_INDEX(sequence);
-		cmd_index = iwl_pcie_get_cmd_index(txq, index);
-
 		if (rxq->id == trans_pcie->def_rx_queue)
 			iwl_op_mode_rx(trans->op_mode, &rxq->napi,
 				       &rxcb);
@@ -1325,17 +1313,19 @@ static void iwl_pcie_rx_handle_rb(struct iwl_trans *trans,
 			iwl_op_mode_rx_rss(trans->op_mode, &rxq->napi,
 					   &rxcb, rxq->id);
 
-		if (reclaim) {
-			kzfree(txq->entries[cmd_index].free_buf);
-			txq->entries[cmd_index].free_buf = NULL;
-		}
-
 		/*
 		 * After here, we should always check rxcb._page_stolen,
 		 * if it is true then one of the handlers took the page.
 		 */
 
 		if (reclaim) {
+			u16 sequence = le16_to_cpu(pkt->hdr.sequence);
+			int index = SEQ_TO_INDEX(sequence);
+			int cmd_index = iwl_txq_get_cmd_index(txq, index);
+
+			kfree_sensitive(txq->entries[cmd_index].free_buf);
+			txq->entries[cmd_index].free_buf = NULL;
+
 			/* Invoke any callbacks, transfer the buffer to caller,
 			 * and fire off the (possibly) blocking
 			 * iwl_trans_send_cmd()
@@ -1347,9 +1337,8 @@ static void iwl_pcie_rx_handle_rb(struct iwl_trans *trans,
 		}
 
 		page_stolen |= rxcb._page_stolen;
-		if (trans->trans_cfg->device_family >= IWL_DEVICE_FAMILY_22560)
+		if (trans->trans_cfg->device_family >= IWL_DEVICE_FAMILY_AX210)
 			break;
-		offset += ALIGN(len, FH_RSCSR_FRAME_ALIGN);
 	}
 
 	/* page was stolen from us -- free our reference */
@@ -1363,8 +1352,8 @@ static void iwl_pcie_rx_handle_rb(struct iwl_trans *trans,
 	 * rx_free list for reuse later. */
 	if (rxb->page != NULL) {
 		rxb->page_dma =
-			dma_map_page(trans->dev, rxb->page, 0,
-				     PAGE_SIZE << trans_pcie->rx_page_order,
+			dma_map_page(trans->dev, rxb->page, rxb->offset,
+				     trans_pcie->rx_buf_bytes,
 				     DMA_FROM_DEVICE);
 		if (dma_mapping_error(trans->dev, rxb->page_dma)) {
 			/*
@@ -1384,7 +1373,8 @@ static void iwl_pcie_rx_handle_rb(struct iwl_trans *trans,
 }
 
 static struct iwl_rx_mem_buffer *iwl_pcie_get_rxb(struct iwl_trans *trans,
-						  struct iwl_rxq *rxq, int i)
+						  struct iwl_rxq *rxq, int i,
+						  bool *join)
 {
 	struct iwl_trans_pcie *trans_pcie = IWL_TRANS_GET_PCIE_TRANS(trans);
 	struct iwl_rx_mem_buffer *rxb;
@@ -1398,13 +1388,14 @@ static struct iwl_rx_mem_buffer *iwl_pcie_get_rxb(struct iwl_trans *trans,
 		return rxb;
 	}
 
-	/* used_bd is a 32/16 bit but only 12 are used to retrieve the vid */
-	if (trans->trans_cfg->device_family >= IWL_DEVICE_FAMILY_22560)
-		vid = le16_to_cpu(rxq->cd[i].rbid) & 0x0FFF;
-	else
-		vid = le32_to_cpu(rxq->bd_32[i]) & 0x0FFF;
+	if (trans->trans_cfg->device_family >= IWL_DEVICE_FAMILY_AX210) {
+		vid = le16_to_cpu(rxq->cd[i].rbid);
+		*join = rxq->cd[i].flags & IWL_RX_CD_FLAGS_FRAGMENTED;
+	} else {
+		vid = le32_to_cpu(rxq->bd_32[i]) & 0x0FFF; /* 12-bit VID */
+	}
 
-	if (!vid || vid > ARRAY_SIZE(trans_pcie->global_table))
+	if (!vid || vid > RX_POOL_SIZE(trans_pcie->num_rx_bufs))
 		goto out_err;
 
 	rxb = trans_pcie->global_table[vid - 1];
@@ -1429,6 +1420,7 @@ out_err:
 static void iwl_pcie_rx_handle(struct iwl_trans *trans, int queue)
 {
 	struct iwl_trans_pcie *trans_pcie = IWL_TRANS_GET_PCIE_TRANS(trans);
+	struct napi_struct *napi;
 	struct iwl_rxq *rxq;
 	u32 r, i, count = 0;
 	bool emergency = false;
@@ -1459,6 +1451,7 @@ restart:
 		u32 rb_pending_alloc =
 			atomic_read(&trans_pcie->rba.req_pending) *
 			RX_CLAIM_REQ_ALLOC;
+		bool join = false;
 
 		if (unlikely(rb_pending_alloc >= rxq->queue_size / 2 &&
 			     !emergency)) {
@@ -1471,11 +1464,29 @@ restart:
 
 		IWL_DEBUG_RX(trans, "Q %d: HW = %d, SW = %d\n", rxq->id, r, i);
 
-		rxb = iwl_pcie_get_rxb(trans, rxq, i);
+		rxb = iwl_pcie_get_rxb(trans, rxq, i, &join);
 		if (!rxb)
 			goto out;
 
-		iwl_pcie_rx_handle_rb(trans, rxq, rxb, emergency, i);
+		if (unlikely(join || rxq->next_rb_is_fragment)) {
+			rxq->next_rb_is_fragment = join;
+			/*
+			 * We can only get a multi-RB in the following cases:
+			 *  - firmware issue, sending a too big notification
+			 *  - sniffer mode with a large A-MSDU
+			 *  - large MTU frames (>2k)
+			 * since the multi-RB functionality is limited to newer
+			 * hardware that cannot put multiple entries into a
+			 * single RB.
+			 *
+			 * Right now, the higher layers aren't set up to deal
+			 * with that, so discard all of these.
+			 */
+			list_add_tail(&rxb->list, &rxq->rx_free);
+			rxq->free_count++;
+		} else {
+			iwl_pcie_rx_handle_rb(trans, rxq, rxb, emergency, i);
+		}
 
 		i = (i + 1) & (rxq->queue_size - 1);
 
@@ -1515,7 +1526,7 @@ out:
 	/* Backtrack one entry */
 	rxq->read = i;
 	/* update cr tail with the rxq read pointer */
-	if (trans->trans_cfg->device_family >= IWL_DEVICE_FAMILY_22560)
+	if (trans->trans_cfg->device_family >= IWL_DEVICE_FAMILY_AX210)
 		*rxq->cr_tail = cpu_to_le16(r);
 	spin_unlock(&rxq->lock);
 
@@ -1534,8 +1545,16 @@ out:
 	if (unlikely(emergency && count))
 		iwl_pcie_rxq_alloc_rbs(trans, GFP_ATOMIC, rxq);
 
-	if (rxq->napi.poll)
-		napi_gro_flush(&rxq->napi, false);
+	napi = &rxq->napi;
+	if (napi->poll) {
+		napi_gro_flush(napi, false);
+
+		if (napi->rx_count) {
+			netif_receive_skb_list(&napi->rx_list);
+			INIT_LIST_HEAD(&napi->rx_list);
+			napi->rx_count = 0;
+		}
+	}
 
 	iwl_pcie_rxq_restock(trans, rxq);
 }
@@ -1598,9 +1617,9 @@ static void iwl_pcie_irq_handle_error(struct iwl_trans *trans)
 	}
 
 	for (i = 0; i < trans->trans_cfg->base_params->num_of_queues; i++) {
-		if (!trans_pcie->txq[i])
+		if (!trans->txqs.txq[i])
 			continue;
-		del_timer(&trans_pcie->txq[i]->stuck_timer);
+		del_timer(&trans->txqs.txq[i]->stuck_timer);
 	}
 
 	/* The STATUS_FW_ERROR bit is set in this function. This must happen
@@ -2152,8 +2171,7 @@ irqreturn_t iwl_pcie_irq_msix_handler(int irq, void *dev_id)
 
 	/* Error detected by uCode */
 	if ((inta_fh & MSIX_FH_INT_CAUSES_FH_ERR) ||
-	    (inta_hw & MSIX_HW_INT_CAUSES_REG_SW_ERR) ||
-	    (inta_hw & MSIX_HW_INT_CAUSES_REG_SW_ERR_V2)) {
+	    (inta_hw & MSIX_HW_INT_CAUSES_REG_SW_ERR)) {
 		IWL_ERR(trans,
 			"Microcode SW error detected. Restarting 0x%X.\n",
 			inta_fh);
@@ -2185,17 +2203,7 @@ irqreturn_t iwl_pcie_irq_msix_handler(int irq, void *dev_id)
 		}
 	}
 
-	if (trans->trans_cfg->device_family == IWL_DEVICE_FAMILY_22560 &&
-	    inta_hw & MSIX_HW_INT_CAUSES_REG_IPC) {
-		/* Reflect IML transfer status */
-		int res = iwl_read32(trans, CSR_IML_RESP_ADDR);
-
-		IWL_DEBUG_ISR(trans, "IML transfer status: %d\n", res);
-		if (res == IWL_IMAGE_RESP_FAIL) {
-			isr_stats->sw++;
-			iwl_pcie_irq_handle_error(trans);
-		}
-	} else if (inta_hw & MSIX_HW_INT_CAUSES_REG_WAKEUP) {
+	if (inta_hw & MSIX_HW_INT_CAUSES_REG_WAKEUP) {
 		u32 sleep_notif =
 			le32_to_cpu(trans_pcie->prph_info->sleep_notif);
 		if (sleep_notif == IWL_D3_SLEEP_STATUS_SUSPEND ||
@@ -2212,17 +2220,6 @@ irqreturn_t iwl_pcie_irq_msix_handler(int irq, void *dev_id)
 			iwl_pcie_txq_check_wrptrs(trans);
 
 			isr_stats->wakeup++;
-		}
-	}
-
-	if (inta_hw & MSIX_HW_INT_CAUSES_REG_IML) {
-		/* Reflect IML transfer status */
-		int res = iwl_read32(trans, CSR_IML_RESP_ADDR);
-
-		IWL_DEBUG_ISR(trans, "IML transfer status: %d\n", res);
-		if (res == IWL_IMAGE_RESP_FAIL) {
-			isr_stats->sw++;
-			iwl_pcie_irq_handle_error(trans);
 		}
 	}
 
@@ -2243,6 +2240,12 @@ irqreturn_t iwl_pcie_irq_msix_handler(int irq, void *dev_id)
 		isr_stats->hw++;
 		trans->dbg.hw_error = true;
 		iwl_pcie_irq_handle_error(trans);
+	}
+
+	if (inta_hw & MSIX_HW_INT_CAUSES_REG_RESET_DONE) {
+		IWL_DEBUG_ISR(trans, "Reset flow completed\n");
+		trans_pcie->fw_reset_done = true;
+		wake_up(&trans_pcie->fw_reset_waitq);
 	}
 
 	iwl_pcie_clear_irq(trans, entry);

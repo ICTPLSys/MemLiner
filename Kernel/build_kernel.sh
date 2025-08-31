@@ -2,30 +2,19 @@
 
 
 ### Parameters
+version="5.11.0"
+# the suffix
+LocalVersion="-memliner"
 
-version="5.4.0"
-#LocalVersion="adc"
-# Or remove the suffix
-LocalVersion=
-
-
-num_core=`nproc`
 
 ### Operations
-
 op=$1
-
-
 if [ -z "${op}"  ]
 then
 	echo "Please select the operation, e.g. build, install, replace, update_grub"
 	read op
 fi
-
 echo "Do the action ${op}"
-
-
-
 
 
 # Detect Linux releases
@@ -38,6 +27,7 @@ then
 	echo "Running on Ubuntu..."
 fi
 
+
 ## Functions
 delete_old_kernel_contents () {
 	if [[ $OS_DISTRO == "CentOS Linux" ]]
@@ -47,28 +37,24 @@ delete_old_kernel_contents () {
 		sudo rm /boot/initramfs-${version}${LocalVersion}.img   /boot/System.map-${version}${LocalVersion}  /boot/vmlinuz-${version}${LocalVersion}
 	elif [ $OS_DISTRO == "Ubuntu" ]
 	then
-		echo "sudo rm /boot/initrd.img-${version}*   /boot/System.map-${version}*  /boot/vmlinuz-${version}* "
+		echo "sudo rm /boot/initrd.img-${version}${LocalVersion}*   /boot/System.map-${version}*  /boot/vmlinuz-${version}${LocalVersion}* "
 		sleep 1
-		sudo rm /boot/initrd.img-${version}*   /boot/System.map-${version}*  /boot/vmlinuz-${version}*
+		sudo rm /boot/initrd.img-${version}${LocalVersion}*   /boot/System.map-${version}${LocalVersion}*  /boot/vmlinuz-${version}${LocalVersion}*
 	fi
 }
-
 
 install_new_kernel_contents () {
 	echo "install kernel modules"
 	sleep 1
-	sudo make -j${num_core} INSTALL_MOD_STRIP=1  modules_install
+	sudo make INSTALL_MOD_STRIP=1 modules_install
 
 	echo "install kernel image"
 	sleep 1
-	sudo make -j${num_core} INSTALL_MOD_STRIP=1  install
+	sudo make install
 
-	#echo "Install uapi kernel headers to /usr/include/linux/"
-	#sudo make headers_install INSTALL_HDR_PATH=/usr
-
+	echo "Install uapi kernel headers to /usr/include/linux/"
+	sudo make headers_install INSTALL_HDR_PATH=/usr
 }
-
-
 
 update_grub_entries () {
 	if [[ $OS_DISTRO == "CentOS Linux" ]]
@@ -99,7 +85,7 @@ update_grub_entries () {
 		fi
 
 		echo "Set default entry to Item 0"
-		sudo grub2-set-default 0
+		sudo grub-set-default 0
 
 		echo "Current grub entry"
 		sleep 1
@@ -108,24 +94,22 @@ update_grub_entries () {
 	then
 		# # Ubuntu: to list grub entries
 		# awk -F\' '/menuentry / {print $2}' /boot/grub/grub.cfg
-		echo "(MUST run with sudo) Rebuild grub"
+		echo " Rebuild grub"
 		sudo update-grub2
 	fi
 }
 
 
-
 ### Do the action
-
 if [ "${op}" = "build" ]
 then
 	echo "make oldconfig"
 	sleep 1
-	make oldconfig
+    # make oldconfig
 
-	echo "make LOCALVERSION=${localVersion}  -j${num_core} "
+	echo "make LOCALVERSION=${LocalVersion}  -j32"
 	sleep 1
-	make LOCALVERSION="${localVersion}"  -j${num_core} 
+	make LOCALVERSION="${LocalVersion}" -j32
 
 elif [ "${op}" = "install" ]
 then
@@ -143,14 +127,13 @@ then
 	sleep 1
 
 	echo "Install kernel image only"
-	sudo make -j${num_core}  install
+	sudo make install
 	sleep 1
 
 	update_grub_entries
 
 elif [ "${op}" = "update_grub"  ]
 then
-
 	update_grub_entries
 
 else

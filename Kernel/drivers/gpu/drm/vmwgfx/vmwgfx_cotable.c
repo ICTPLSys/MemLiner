@@ -80,9 +80,10 @@ static const struct vmw_cotable_info co_info[] = {
 	{1, sizeof(SVGACOTableDXDepthStencilEntry), NULL},
 	{1, sizeof(SVGACOTableDXRasterizerStateEntry), NULL},
 	{1, sizeof(SVGACOTableDXSamplerEntry), NULL},
-	{1, sizeof(SVGACOTableDXStreamOutputEntry), NULL},
+	{1, sizeof(SVGACOTableDXStreamOutputEntry), &vmw_dx_streamoutput_cotable_list_scrub},
 	{1, sizeof(SVGACOTableDXQueryEntry), NULL},
-	{1, sizeof(SVGACOTableDXShaderEntry), &vmw_dx_shader_cotable_list_scrub}
+	{1, sizeof(SVGACOTableDXShaderEntry), &vmw_dx_shader_cotable_list_scrub},
+	{1, sizeof(SVGACOTableDXUAViewEntry), &vmw_view_cotable_list_destroy}
 };
 
 /*
@@ -102,6 +103,7 @@ const SVGACOTableType vmw_cotable_scrub_order[] = {
 	SVGA_COTABLE_SAMPLER,
 	SVGA_COTABLE_STREAMOUTPUT,
 	SVGA_COTABLE_DXQUERY,
+	SVGA_COTABLE_UAVIEW,
 };
 
 static int vmw_cotable_bind(struct vmw_resource *res,
@@ -408,8 +410,8 @@ static int vmw_cotable_resize(struct vmw_resource *res, size_t new_size)
 	if (!buf)
 		return -ENOMEM;
 
-	ret = vmw_bo_init(dev_priv, buf, new_size, &vmw_mob_ne_placement,
-			  true, vmw_bo_bo_free);
+	ret = vmw_bo_init(dev_priv, buf, new_size, &vmw_mob_placement,
+			  true, true, vmw_bo_bo_free);
 	if (ret) {
 		DRM_ERROR("Failed initializing new cotable MOB.\n");
 		return ret;

@@ -406,7 +406,7 @@ static int vmw_fb_create_bo(struct vmw_private *vmw_priv,
 
 	ret = vmw_bo_init(vmw_priv, vmw_bo, size,
 			      &vmw_sys_placement,
-			      false,
+			      false, false,
 			      &vmw_bo_bo_free);
 	if (unlikely(ret != 0))
 		goto err_unlock; /* init frees the buffer on failure */
@@ -624,7 +624,7 @@ out_unlock:
 }
 
 
-static struct fb_ops vmw_fb_ops = {
+static const struct fb_ops vmw_fb_ops = {
 	.owner = THIS_MODULE,
 	.fb_check_var = vmw_fb_check_var,
 	.fb_set_par = vmw_fb_set_par,

@@ -255,6 +255,21 @@ static inline void intel_gvt_hypervisor_dma_unmap_guest_page(
 }
 
 /**
+ * intel_gvt_hypervisor_dma_pin_guest_page - pin guest dma buf
+ * @vgpu: a vGPU
+ * @dma_addr: guest dma addr
+ *
+ * Returns:
+ * 0 on success, negative error code if failed.
+ */
+static inline int
+intel_gvt_hypervisor_dma_pin_guest_page(struct intel_vgpu *vgpu,
+					dma_addr_t dma_addr)
+{
+	return intel_gvt_host.mpt->dma_pin_guest_page(vgpu->handle, dma_addr);
+}
+
+/**
  * intel_gvt_hypervisor_map_gfn_to_mfn - map a GFN region to MFN
  * @vgpu: a vGPU
  * @gfn: guest PFN
@@ -377,7 +392,7 @@ static inline bool intel_gvt_hypervisor_is_valid_gfn(
 	return intel_gvt_host.mpt->is_valid_gfn(vgpu->handle, gfn);
 }
 
-int intel_gvt_register_hypervisor(struct intel_gvt_mpt *);
+int intel_gvt_register_hypervisor(const struct intel_gvt_mpt *);
 void intel_gvt_unregister_hypervisor(void);
 
 #endif /* _GVT_MPT_H_ */

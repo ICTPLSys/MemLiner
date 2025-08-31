@@ -603,6 +603,8 @@ static long inno_hdmi_phy_rk3228_clk_round_rate(struct clk_hw *hw,
 {
 	const struct pre_pll_config *cfg = pre_pll_cfg_table;
 
+	rate = (rate / 1000) * 1000;
+
 	for (; cfg->pixclock != 0; cfg++)
 		if (cfg->pixclock == rate && !cfg->fracdiv)
 			break;
@@ -754,6 +756,8 @@ static long inno_hdmi_phy_rk3328_clk_round_rate(struct clk_hw *hw,
 						unsigned long *parent_rate)
 {
 	const struct pre_pll_config *cfg = pre_pll_cfg_table;
+
+	rate = (rate / 1000) * 1000;
 
 	for (; cfg->pixclock != 0; cfg++)
 		if (cfg->pixclock == rate)
@@ -1140,7 +1144,6 @@ static int inno_hdmi_phy_probe(struct platform_device *pdev)
 {
 	struct inno_hdmi_phy *inno;
 	struct phy_provider *phy_provider;
-	struct resource *res;
 	void __iomem *regs;
 	int ret;
 
@@ -1154,8 +1157,7 @@ static int inno_hdmi_phy_probe(struct platform_device *pdev)
 	if (!inno->plat_data || !inno->plat_data->ops)
 		return -EINVAL;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	regs = devm_ioremap_resource(inno->dev, res);
+	regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(regs))
 		return PTR_ERR(regs);
 

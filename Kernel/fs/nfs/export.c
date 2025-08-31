@@ -105,6 +105,7 @@ nfs_fh_to_dentry(struct super_block *sb, struct fid *fid,
 	ret = rpc_ops->getattr(NFS_SB(sb), server_fh, fattr, label, NULL);
 	if (ret) {
 		dprintk("%s: getattr failed %d\n", __func__, ret);
+		trace_nfs_fh_to_dentry(sb, server_fh, fattr->fileid, ret);
 		dentry = ERR_PTR(ret);
 		goto out_free_label;
 	}
@@ -170,4 +171,7 @@ const struct export_operations nfs_export_ops = {
 	.encode_fh = nfs_encode_fh,
 	.fh_to_dentry = nfs_fh_to_dentry,
 	.get_parent = nfs_get_parent,
+	.flags = EXPORT_OP_NOWCC|EXPORT_OP_NOSUBTREECHK|
+		EXPORT_OP_CLOSE_BEFORE_UNLINK|EXPORT_OP_REMOTE_FS|
+		EXPORT_OP_NOATOMIC_ATTR,
 };

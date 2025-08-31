@@ -229,6 +229,8 @@ enum {
 #define KSEL_BYPASS_25 6
 #define KSEL_BYPASS_83_100 7
 
+struct drm_fb_helper;
+
 struct opregion_header;
 struct opregion_acpi;
 struct opregion_swsci;
@@ -432,7 +434,7 @@ struct drm_psb_private {
 	struct pci_dev *lpc_pdev; /* Currently only used by mrst */
 	const struct psb_ops *ops;
 	const struct psb_offset *regmap;
-	
+
 	struct child_device_config *child_dev;
 	int child_dev_num;
 
@@ -540,7 +542,7 @@ struct drm_psb_private {
 
 	/* Oaktrail HDMI state */
 	struct oaktrail_hdmi_dev *hdmi_priv;
-	
+
 	/* Register state */
 	struct psb_save_area regs;
 
@@ -572,10 +574,7 @@ struct drm_psb_private {
 	uint32_t blc_adj1;
 	uint32_t blc_adj2;
 
-	void *fbdev;
-
-	/* 2D acceleration */
-	spinlock_t lock_2d;
+	struct drm_fb_helper *fb_helper;
 
 	/* Panel brightness */
 	int brightness;
@@ -613,7 +612,6 @@ struct drm_psb_private {
 /* Operations for each board type */
 struct psb_ops {
 	const char *name;
-	unsigned int accel_2d:1;
 	int pipes;		/* Number of output pipes */
 	int crtcs;		/* Number of CRTCs */
 	int sgx_offset;		/* Base offset of SGX device */
@@ -679,24 +677,21 @@ extern void psb_irq_turn_off_dpst(struct drm_device *dev);
 extern void psb_irq_uninstall_islands(struct drm_device *dev, int hw_islands);
 extern int psb_vblank_wait2(struct drm_device *dev, unsigned int *sequence);
 extern int psb_vblank_wait(struct drm_device *dev, unsigned int *sequence);
-extern int psb_enable_vblank(struct drm_device *dev, unsigned int pipe);
-extern void psb_disable_vblank(struct drm_device *dev, unsigned int pipe);
+extern int psb_enable_vblank(struct drm_crtc *crtc);
+extern void psb_disable_vblank(struct drm_crtc *crtc);
 void
 psb_enable_pipestat(struct drm_psb_private *dev_priv, int pipe, u32 mask);
 
 void
 psb_disable_pipestat(struct drm_psb_private *dev_priv, int pipe, u32 mask);
 
-extern u32 psb_get_vblank_counter(struct drm_device *dev, unsigned int pipe);
+extern u32 psb_get_vblank_counter(struct drm_crtc *crtc);
 
 /* framebuffer.c */
 extern int psbfb_probed(struct drm_device *dev);
 extern int psbfb_remove(struct drm_device *dev,
 			struct drm_framebuffer *fb);
 /* accel_2d.c */
-extern void psbfb_copyarea(struct fb_info *info,
-					const struct fb_copyarea *region);
-extern int psbfb_sync(struct fb_info *info);
 extern void psb_spank(struct drm_psb_private *dev_priv);
 
 /* psb_reset.c */
@@ -733,12 +728,8 @@ extern const struct drm_connector_helper_funcs
 extern const struct drm_connector_funcs psb_intel_lvds_connector_funcs;
 
 /* gem.c */
-extern void psb_gem_free_object(struct drm_gem_object *obj);
-extern int psb_gem_get_aperture(struct drm_device *dev, void *data,
-			struct drm_file *file);
 extern int psb_gem_dumb_create(struct drm_file *file, struct drm_device *dev,
 			struct drm_mode_create_dumb *args);
-extern vm_fault_t psb_gem_fault(struct vm_fault *vmf);
 
 /* psb_device.c */
 extern const struct psb_ops psb_chip_ops;
